@@ -141,7 +141,9 @@ class ChargePoint:
         self.chargemode = "stop"
         self.template_id = CFG_TEMPLATE_ID
         self.soc = None
-        self.start_of_charge = None
+        # Ladesitzung (seit Anstecken): Basiswerte fuer Session/Energy und /Time
+        self.session_base_imported = None
+        self.session_base_time = None
         self.last_msg = 0.0
 
         self.base = "%s/chargepoint/%d" % (MQTT_ROOT, cp_id)
@@ -166,7 +168,7 @@ class ChargePoint:
         sn = "com.victronenergy.evcharger.openwb2_%d" % self.instance
         svc = VeDbusService(sn)
         svc.add_path("/Mgmt/ProcessName", __file__)
-        svc.add_path("/Mgmt/ProcessVersion", "1.3.1 auf Python " + platform.python_version())
+        svc.add_path("/Mgmt/ProcessVersion", "1.4.0 auf Python " + platform.python_version())
         svc.add_path("/Mgmt/Connection", "MQTT openWB2 %s:%d" % (BROKER_ADDR, BROKER_PORT))
         svc.add_path("/DeviceInstance", self.instance)
         svc.add_path("/ProductId", 0xC024)
@@ -190,6 +192,8 @@ class ChargePoint:
             "/Ac/Frequency":      {"i": 0, "f": _hz,  "w": False},
             "/Current":           {"i": 0, "f": _a,   "w": False},
             "/ChargingTime":      {"i": 0, "f": _s,   "w": False},
+            "/Session/Energy":    {"i": 0, "f": _kwh, "w": False},
+            "/Session/Time":      {"i": 0, "f": _s,   "w": False},
             "/NrOfPhases":        {"i": 1, "f": _t,   "w": False},
             "/Soc":               {"i": 0, "f": _pct, "w": False},
             "/Position":          {"i": POSITION,    "f": _t, "w": True},
@@ -211,18 +215,14 @@ class ChargePoint:
             fn(payload)
 
     def _t_power(self, p):
-        new = _f(p)
-        if new > 1000 and self.power <= 1000:
-            self.start_of_charge = time()
-        elif new <= 1000:
-            self.start_of_charge = None
-        self.power = new
-        self.svc["/Ac/Power"] = round(new, 1)
+        self.power = _f(p)
+        self.svc["/Ac/Power"] = round(self.power, 1)
         self._phase_powers()
 
     def _t_imported(self, p):
         self.imported = _f(p)
         self.svc["/Ac/Energy/Forward"] = round(self.imported / 1000.0, 3)
+        self._update_session()
 
     def _t_currents(self, p):
         a = _arr(p)
@@ -307,20 +307,40 @@ class ChargePoint:
         st = 0 if not self.plug else (2 if self.charge else 1)
         self.svc["/Status"] = st
         self.svc["/StartStop"] = 1 if self.charge else 0
-        self.svc["/ChargingTime"] = int(time() - self.start_of_charge) if self.start_of_charge else 0
+        self._update_session()
+
+    def _update_session(self):
+        """Sitzung = seit Anstecken. Speist /Session/Energy, /Session/Time, /ChargingTime."""
+        if not self.plug:
+            # getrennt -> keine Sitzung (Kachel zeigt "--")
+            self.session_base_imported = None
+            self.session_base_time = None
+            self.svc["/Session/Energy"] = None
+            self.svc["/Session/Time"] = None
+            self.svc["/ChargingTime"] = 0
+            return
+        if self.session_base_imported is None:
+            self.session_base_imported = self.imported
+            self.session_base_time = time()
+        kwh = max(0.0, self.imported - self.session_base_imported) / 1000.0
+        secs = int(time() - self.session_base_time)
+        self.svc["/Session/Energy"] = round(kwh, 3)
+        self.svc["/Session/Time"] = secs
+        self.svc["/ChargingTime"] = secs
 
     def tick(self):
         idx = (self.svc["/UpdateIndex"] + 1) % 256
         self.svc["/UpdateIndex"] = idx
-        if self.start_of_charge:
-            self.svc["/ChargingTime"] = int(time() - self.start_of_charge)
+        self._update_session()
 
     def snapshot(self):
         st = {0: "Getrennt", 1: "Verbunden", 2: "Laedt"}.get(self.svc["/Status"], "?")
+        sess = self.svc["/Session/Energy"]
         return {
             "id": self.id, "instance": self.instance, "name": self.name,
             "power": round(self.power, 1),
             "energy_kwh": round(self.imported / 1000.0, 2),
+            "session_kwh": round(sess, 2) if sess is not None else None,
             "set_current": round(self.evse_current, 1),
             "phases": self.phases, "soc": self.soc,
             "status": st, "charging": bool(self.charge),

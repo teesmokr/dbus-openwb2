@@ -701,6 +701,7 @@ async function pollLive(){
     for(const c of cps){
       const cls = c.charging?"p-charging":(c.plugged?"p-connected":"p-idle");
       const soc = (c.soc!==null&&c.soc!==undefined)?`<div class="metric"><div class="v">${Math.round(c.soc)} %</div><div class="k">Fahrzeug-SoC</div></div>`:"";
+      const sess = (c.session_kwh!==null&&c.session_kwh!==undefined)?`<div class="metric"><div class="v">${c.session_kwh}</div><div class="k">kWh Sitzung</div></div>`:"";
       h+=`<div class="lp">
         <div class="lphead"><span class="lpname">${c.name} <small style="color:var(--muted)">· LP ${c.id}</small></span>
           <span class="pill ${cls}">${c.status}</span></div>
@@ -709,7 +710,7 @@ async function pollLive(){
           <div class="metric"><div class="v">${fmt(c.set_current)} A</div><div class="k">Sollstrom</div></div>
           <div class="metric"><div class="v">${fmt(c.phases)}</div><div class="k">Phasen</div></div>
           <div class="metric"><div class="v">${fmt(c.energy_kwh)}</div><div class="k">kWh gesamt</div></div>
-          ${soc}
+          ${sess}${soc}
         </div></div>`;
     }
     $("live").innerHTML=h;

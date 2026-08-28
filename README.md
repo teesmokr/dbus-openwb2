@@ -66,7 +66,7 @@ verwalten (Download, Update, automatische Neuinstallation nach Firmware-Updates)
 |------|------|
 | Package name | `dbus-openwb2` |
 | GitHub user   | `teesmokr` |
-| GitHub branch/tag | `main` (oder `v1.3.0`) |
+| GitHub branch/tag | `main` (oder `v1.4.0`) |
 
 Dann **Proceed / Install**. Das mitgelieferte [`setup`](setup)-Script installiert
 `paho-mqtt`, legt die `config.ini` an und verlinkt beide Dienste.
@@ -177,7 +177,9 @@ eintragen (nicht die der openWB).
 |-------------------------|---------------------------------------------------|
 | `/Ac/Power`             | `chargepoint/<id>/get/power`                       |
 | `/Ac/L{1,2,3}/Power`    | `get/powers` (bzw. `currents` × `voltages`)        |
-| `/Ac/Energy/Forward`    | `get/imported` (Wh → kWh)                           |
+| `/Ac/Energy/Forward`    | `get/imported` (Wh → kWh, Gesamtzähler)             |
+| `/Session/Energy`       | `get/imported` − Stand beim Anstecken (Sitzung)     |
+| `/Session/Time`         | Dauer seit Anstecken                                |
 | `/Ac/Voltage`           | `get/voltages` (Mittelwert)                         |
 | `/Current`              | `get/currents` (Maximum)                            |
 | `/SetCurrent`           | `get/evse_current`                                  |

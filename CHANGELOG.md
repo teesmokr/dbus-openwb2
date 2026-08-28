@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.4.0] – 2026-08-28
+
+### Neu
+- **Sitzungsenergie auf der EVCS-Kachel**: Der Treiber publiziert jetzt
+  `/Session/Energy` und `/Session/Time` – die Venus-EVCS-Kachel liest genau
+  diese Pfade und zeigt damit während des Ladens die **geladene kWh** und die
+  **Ladedauer der aktuellen Sitzung** (vorher „--kWh"). Sitzung = seit Anstecken;
+  beim Abstecken wird sie zurückgesetzt (Kachel zeigt „--").
+- Live-Status im Web-Interface zeigt zusätzlich **kWh Sitzung**.
+
+### Intern
+- Sitzungslogik über `plug_state`/`imported`-Delta statt Leistungs-Heuristik.
+
 ## [1.3.1] – 2026-08-28
 
 ### Behoben
