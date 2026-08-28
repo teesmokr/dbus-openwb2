@@ -7,13 +7,12 @@ com.victronenergy.evcharger in Venus OS.
 - Liest die openWB-Daten ueber MQTT (Broker laeuft auf der openWB, Port 1883).
 - Published sie auf den D-Bus, damit die Wallbox in der Venus-GUI und im VRM
   als Ladestation erscheint.
+- Unterstuetzt mehrere Ladepunkte (ein evcharger-Service je Ladepunkt).
 - Optionale Steuerung (Start/Stop, Ladestrom, Modus) zurueck in die openWB,
   abschaltbar per config.ini ([CONTROL] enabled = 0/1).
+- Schreibt eine status.json fuer die Live-Anzeige im Web-Interface.
 
 Konfiguration bequem ueber das mitgelieferte Web-Interface (webconfig.py).
-
-Abgeleitet von der Idee von gvzdus/dbus-mqtt-openwb (fuer openWB 1.9),
-neu geschrieben fuer die openWB-2-Topic-Struktur.
 """
 
 import os
@@ -23,6 +22,7 @@ import logging
 import platform
 import configparser
 from time import time, sleep
+from functools import partial
 
 from gi.repository import GLib  # pyright: ignore[reportMissingImports]
 import paho.mqtt.client as mqtt
@@ -43,7 +43,9 @@ def make_mqtt_client(client_id):
 # --------------------------------------------------------------------------
 # Konfiguration laden
 # --------------------------------------------------------------------------
-CONFIG_FILE = os.path.join(os.path.dirname(os.path.realpath(__file__)), "config.ini")
+HERE = os.path.dirname(os.path.realpath(__file__))
+CONFIG_FILE = os.path.join(HERE, "config.ini")
+STATUS_FILE = os.path.join(HERE, "status.json")
 
 
 def load_config():
@@ -82,7 +84,8 @@ MQTT_USER      = config["MQTT"].get("username", "") or None
 MQTT_PASS      = config["MQTT"].get("password", "") or None
 TLS_ENABLED    = config["MQTT"].get("tls_enabled", "0") == "1"
 
-CP_ID          = int(config["WALLBOX"].get("chargepoint_id", "1"))
+# Ladepunkt-IDs koennen als Liste angegeben werden: "1" oder "1,2"
+CP_IDS = [int(x) for x in str(config["WALLBOX"].get("chargepoint_id", "1")).replace(" ", "").split(",") if x]
 MAX_CURRENT    = int(config["WALLBOX"].get("max_current", "16"))
 POSITION       = int(config["WALLBOX"].get("position", "1"))
 NOM_VOLTAGE    = float(config["WALLBOX"].get("nominal_voltage", "230"))
@@ -93,55 +96,42 @@ TIMEOUT        = int(config["DEFAULT"].get("timeout", "60"))
 
 CONTROL_ENABLED = config["CONTROL"].get("enabled", "0") == "1" \
     if config.has_section("CONTROL") else False
-# 0 = automatisch aus connected_vehicle/config erkennen
 CFG_TEMPLATE_ID = int(config["CONTROL"].get("charge_template_id", "0")) \
     if config.has_section("CONTROL") else 0
 
 
-# --------------------------------------------------------------------------
-# openWB-2 Topics
-# --------------------------------------------------------------------------
-CP_BASE = "%s/chargepoint/%d" % (MQTT_ROOT, CP_ID)
-
-T_POWER       = CP_BASE + "/get/power"
-T_IMPORTED    = CP_BASE + "/get/imported"
-T_CURRENTS    = CP_BASE + "/get/currents"
-T_VOLTAGES    = CP_BASE + "/get/voltages"
-T_POWERS      = CP_BASE + "/get/powers"
-T_PHASES      = CP_BASE + "/get/phases_in_use"
-T_EVSE_CUR    = CP_BASE + "/get/evse_current"
-T_PLUG        = CP_BASE + "/get/plug_state"
-T_CHARGE      = CP_BASE + "/get/charge_state"
-T_FREQ        = CP_BASE + "/get/frequency"
-T_VEH_CONFIG  = CP_BASE + "/get/connected_vehicle/config"
-T_VEH_SOC     = CP_BASE + "/get/connected_vehicle/soc"
-
-SUBSCRIPTIONS = [
-    T_POWER, T_IMPORTED, T_CURRENTS, T_VOLTAGES, T_POWERS, T_PHASES,
-    T_EVSE_CUR, T_PLUG, T_CHARGE, T_FREQ, T_VEH_CONFIG, T_VEH_SOC,
-]
-
 # openWB chargemode  ->  Venus /Mode  (0=Manuell, 1=Auto, 2=Zeitplan)
 CHARGEMODE_TO_MODE = {
-    "instant_charging": 0,
-    "stop": 0,
-    "standby": 0,
-    "pv_charging": 1,
-    "eco_charging": 1,
-    "scheduled_charging": 2,
-    "time_charging": 2,
+    "instant_charging": 0, "stop": 0, "standby": 0,
+    "pv_charging": 1, "eco_charging": 1,
+    "scheduled_charging": 2, "time_charging": 2,
 }
 
+# formatting callbacks
+_kwh = lambda p, v: "%.2f kWh" % v
+_a   = lambda p, v: "%.1f A" % v
+_w   = lambda p, v: "%.0f W" % v
+_v   = lambda p, v: "%.1f V" % v
+_hz  = lambda p, v: "%.1f Hz" % v
+_pct = lambda p, v: "%.0f %%" % v
+_s   = lambda p, v: "%d s" % v
+_t   = lambda p, v: str(v)
+
 
 # --------------------------------------------------------------------------
-# Laufzeit-State
+# Ein Ladepunkt = ein D-Bus evcharger-Service
 # --------------------------------------------------------------------------
-class State:
-    def __init__(self):
+class ChargePoint:
+    def __init__(self, cp_id, instance, name, client):
+        self.id = cp_id
+        self.instance = instance
+        self.name = name
+        self.client = client
+
         self.power = 0.0
         self.imported = 0.0
         self.currents = [0.0, 0.0, 0.0]
-        self.voltages = [NOM_VOLTAGE, NOM_VOLTAGE, NOM_VOLTAGE]
+        self.voltages = [NOM_VOLTAGE] * 3
         self.powers = None
         self.phases = 1
         self.evse_current = 0.0
@@ -154,12 +144,195 @@ class State:
         self.start_of_charge = None
         self.last_msg = 0.0
 
+        self.base = "%s/chargepoint/%d" % (MQTT_ROOT, cp_id)
+        self.topics = {
+            self.base + "/get/power":                     self._t_power,
+            self.base + "/get/imported":                  self._t_imported,
+            self.base + "/get/currents":                  self._t_currents,
+            self.base + "/get/voltages":                  self._t_voltages,
+            self.base + "/get/powers":                    self._t_powers,
+            self.base + "/get/phases_in_use":             self._t_phases,
+            self.base + "/get/evse_current":              self._t_evse,
+            self.base + "/get/frequency":                 self._t_freq,
+            self.base + "/get/plug_state":                self._t_plug,
+            self.base + "/get/charge_state":              self._t_charge,
+            self.base + "/get/connected_vehicle/config":  self._t_vehcfg,
+            self.base + "/get/connected_vehicle/soc":     self._t_soc,
+        }
+        self.svc = self._build_service()
 
-state = State()
-client = None
-dbus_service = None
+    # ---- Service-Aufbau ----
+    def _build_service(self):
+        sn = "com.victronenergy.evcharger.openwb2_%d" % self.instance
+        svc = VeDbusService(sn)
+        svc.add_path("/Mgmt/ProcessName", __file__)
+        svc.add_path("/Mgmt/ProcessVersion", "1.2 auf Python " + platform.python_version())
+        svc.add_path("/Mgmt/Connection", "MQTT openWB2 %s:%d" % (BROKER_ADDR, BROKER_PORT))
+        svc.add_path("/DeviceInstance", self.instance)
+        svc.add_path("/ProductId", 0xC024)
+        svc.add_path("/ProductName", "openWB 2.x")
+        svc.add_path("/CustomName", self.name, writeable=True)
+        svc.add_path("/FirmwareVersion", "1.2")
+        svc.add_path("/HardwareVersion", 2)
+        svc.add_path("/Serial", "openwb2-cp%d" % self.id)
+        svc.add_path("/Connected", 1)
+        svc.add_path("/UpdateIndex", 0)
+        svc.add_path("/Status", 0)
+
+        cb = partial(_on_change, self)
+        paths = {
+            "/Ac/Power":          {"i": 0, "f": _w,   "w": False},
+            "/Ac/L1/Power":       {"i": 0, "f": _w,   "w": False},
+            "/Ac/L2/Power":       {"i": 0, "f": _w,   "w": False},
+            "/Ac/L3/Power":       {"i": 0, "f": _w,   "w": False},
+            "/Ac/Energy/Forward": {"i": 0, "f": _kwh, "w": False},
+            "/Ac/Voltage":        {"i": 0, "f": _v,   "w": False},
+            "/Ac/Frequency":      {"i": 0, "f": _hz,  "w": False},
+            "/Current":           {"i": 0, "f": _a,   "w": False},
+            "/ChargingTime":      {"i": 0, "f": _s,   "w": False},
+            "/NrOfPhases":        {"i": 1, "f": _t,   "w": False},
+            "/Soc":               {"i": 0, "f": _pct, "w": False},
+            "/Position":          {"i": POSITION,    "f": _t, "w": True},
+            "/MaxCurrent":        {"i": MAX_CURRENT, "f": _a, "w": True},
+            "/SetCurrent":        {"i": 0, "f": _a,   "w": True},
+            "/Mode":              {"i": 0, "f": _t,   "w": True},
+            "/StartStop":         {"i": 0, "f": _t,   "w": True},
+        }
+        for path, s in paths.items():
+            svc.add_path(path, s["i"], gettextcallback=s["f"], writeable=s["w"],
+                         onchangecallback=(cb if s["w"] else None))
+        return svc
+
+    # ---- Message-Handler ----
+    def handle(self, topic, payload):
+        fn = self.topics.get(topic)
+        if fn:
+            self.last_msg = time()
+            fn(payload)
+
+    def _t_power(self, p):
+        new = _f(p)
+        if new > 1000 and self.power <= 1000:
+            self.start_of_charge = time()
+        elif new <= 1000:
+            self.start_of_charge = None
+        self.power = new
+        self.svc["/Ac/Power"] = round(new, 1)
+        self._phase_powers()
+
+    def _t_imported(self, p):
+        self.imported = _f(p)
+        self.svc["/Ac/Energy/Forward"] = round(self.imported / 1000.0, 3)
+
+    def _t_currents(self, p):
+        a = _arr(p)
+        if a and len(a) >= 3:
+            self.currents = a[:3]
+            self.svc["/Current"] = round(max(a[:3]), 1)
+            self._phase_powers()
+
+    def _t_voltages(self, p):
+        a = _arr(p)
+        if a and len(a) >= 3:
+            self.voltages = a[:3]
+            self.svc["/Ac/Voltage"] = round(sum(a[:3]) / 3.0, 1)
+
+    def _t_powers(self, p):
+        a = _arr(p)
+        if a and len(a) >= 3:
+            self.powers = a[:3]
+            self._phase_powers()
+
+    def _t_phases(self, p):
+        self.phases = max(1, int(_f(p, 1)))
+        self.svc["/NrOfPhases"] = self.phases
+
+    def _t_evse(self, p):
+        self.evse_current = _f(p)
+        self.svc["/SetCurrent"] = round(self.evse_current, 1)
+
+    def _t_freq(self, p):
+        self.frequency = _f(p)
+        self.svc["/Ac/Frequency"] = round(self.frequency, 1)
+
+    def _t_plug(self, p):
+        self.plug = _bool(p)
+        self._status()
+
+    def _t_charge(self, p):
+        self.charge = _bool(p)
+        self._status()
+
+    def _t_vehcfg(self, p):
+        try:
+            cfg = json.loads(p)
+        except (ValueError, TypeError):
+            return
+        if isinstance(cfg, dict):
+            if CFG_TEMPLATE_ID == 0 and "charge_template" in cfg:
+                self.template_id = int(cfg["charge_template"])
+            mode = cfg.get("chargemode")
+            if mode:
+                self.chargemode = mode
+                self.svc["/Mode"] = CHARGEMODE_TO_MODE.get(mode, 0)
+
+    def _t_soc(self, p):
+        try:
+            cfg = json.loads(p)
+            if isinstance(cfg, dict) and cfg.get("soc") is not None:
+                self.soc = float(cfg["soc"])
+                self.svc["/Soc"] = round(self.soc, 0)
+        except (ValueError, TypeError):
+            pass
+
+    def _phase_powers(self):
+        pw = self.powers if (self.powers and len(self.powers) >= 3) \
+            else [self.currents[i] * self.voltages[i] for i in range(3)]
+        self.svc["/Ac/L1/Power"] = round(pw[0], 1)
+        self.svc["/Ac/L2/Power"] = round(pw[1], 1)
+        self.svc["/Ac/L3/Power"] = round(pw[2], 1)
+
+    def _status(self):
+        st = 0 if not self.plug else (2 if self.charge else 1)
+        self.svc["/Status"] = st
+        self.svc["/StartStop"] = 1 if self.charge else 0
+        self.svc["/ChargingTime"] = int(time() - self.start_of_charge) if self.start_of_charge else 0
+
+    def tick(self):
+        idx = (self.svc["/UpdateIndex"] + 1) % 256
+        self.svc["/UpdateIndex"] = idx
+        if self.start_of_charge:
+            self.svc["/ChargingTime"] = int(time() - self.start_of_charge)
+
+    def snapshot(self):
+        st = {0: "Getrennt", 1: "Verbunden", 2: "Laedt"}.get(self.svc["/Status"], "?")
+        return {
+            "id": self.id, "instance": self.instance, "name": self.name,
+            "power": round(self.power, 1),
+            "energy_kwh": round(self.imported / 1000.0, 2),
+            "set_current": round(self.evse_current, 1),
+            "phases": self.phases, "soc": self.soc,
+            "status": st, "charging": bool(self.charge),
+            "plugged": bool(self.plug), "chargemode": self.chargemode,
+            "template_id": self.template_id,
+            "age": round(time() - self.last_msg, 1) if self.last_msg else None,
+        }
+
+    # ---- Steuerung (Venus -> openWB) ----
+    def publish_chargemode(self, mode):
+        t = "%s/set/vehicle/template/charge_template/%d/chargemode/selected" % (MQTT_ROOT, self.template_id)
+        self.client.publish(t, mode, qos=0, retain=False)
+        log.info("STEUERUNG LP%d chargemode -> %s (tpl %d)", self.id, mode, self.template_id)
+
+    def publish_current(self, amp):
+        t = "%s/set/vehicle/template/charge_template/%d/chargemode/instant_charging/current" % (MQTT_ROOT, self.template_id)
+        self.client.publish(t, str(int(amp)), qos=0, retain=False)
+        log.info("STEUERUNG LP%d Sollstrom -> %d A (tpl %d)", self.id, int(amp), self.template_id)
 
 
+# --------------------------------------------------------------------------
+# Hilfsfunktionen / globale MQTT-Callbacks
+# --------------------------------------------------------------------------
 def _f(payload, default=0.0):
     try:
         return float(payload)
@@ -179,14 +352,34 @@ def _arr(payload):
         return None
 
 
-# --------------------------------------------------------------------------
-# MQTT
-# --------------------------------------------------------------------------
+chargepoints = {}   # cp_id -> ChargePoint
+topic_index = {}    # topic -> ChargePoint
+client = None
+
+
+def _on_change(cp, path, value):
+    if not CONTROL_ENABLED:
+        log.warning("Steuerung deaktiviert - ignoriere %s=%s (LP%d)", path, value, cp.id)
+        return True
+    try:
+        if path == "/StartStop":
+            cp.publish_chargemode("instant_charging" if value == 1 else "stop")
+        elif path in ("/SetCurrent", "/MaxCurrent"):
+            cp.publish_current(value)
+        elif path == "/Mode":
+            cp.publish_chargemode({0: "instant_charging", 1: "pv_charging",
+                                   2: "scheduled_charging"}.get(value, "instant_charging"))
+    except Exception:  # noqa: BLE001
+        et, eo, tb = sys.exc_info()
+        log.error("Fehler in _on_change: %r (Zeile %s)", eo, tb.tb_lineno)
+    return True
+
+
 def on_connect(cli, userdata, flags, rc):
     if rc == 0:
         log.info("MQTT verbunden mit %s:%d", BROKER_ADDR, BROKER_PORT)
-        cli.subscribe([(t, 0) for t in SUBSCRIPTIONS])
-        log.info("Abonniert: Ladepunkt %d (%d Topics)", CP_ID, len(SUBSCRIPTIONS))
+        cli.subscribe([(t, 0) for t in topic_index])
+        log.info("Abonniert: %d Ladepunkt(e), %d Topics", len(chargepoints), len(topic_index))
     else:
         log.error("MQTT-Connect fehlgeschlagen, rc=%s", rc)
 
@@ -196,232 +389,43 @@ def on_disconnect(cli, userdata, rc):
 
 
 def on_message(cli, userdata, msg):
-    if dbus_service is None:
+    cp = topic_index.get(msg.topic)
+    if cp is None:
         return
     try:
-        t = msg.topic
-        p = msg.payload
-        state.last_msg = time()
-
-        if t == T_POWER:
-            new = _f(p)
-            if new > 1000 and state.power <= 1000:
-                state.start_of_charge = time()
-            elif new <= 1000:
-                state.start_of_charge = None
-            state.power = new
-            dbus_service["/Ac/Power"] = round(new, 1)
-
-        elif t == T_IMPORTED:
-            state.imported = _f(p)
-            dbus_service["/Ac/Energy/Forward"] = round(state.imported / 1000.0, 3)
-
-        elif t == T_CURRENTS:
-            a = _arr(p)
-            if a and len(a) >= 3:
-                state.currents = a[:3]
-                dbus_service["/Current"] = round(max(a[:3]), 1)
-
-        elif t == T_VOLTAGES:
-            a = _arr(p)
-            if a and len(a) >= 3:
-                state.voltages = a[:3]
-                dbus_service["/Ac/Voltage"] = round(sum(a[:3]) / 3.0, 1)
-
-        elif t == T_POWERS:
-            a = _arr(p)
-            if a and len(a) >= 3:
-                state.powers = a[:3]
-
-        elif t == T_PHASES:
-            state.phases = max(1, int(_f(p, 1)))
-            dbus_service["/NrOfPhases"] = state.phases
-
-        elif t == T_EVSE_CUR:
-            state.evse_current = _f(p)
-            dbus_service["/SetCurrent"] = round(state.evse_current, 1)
-
-        elif t == T_FREQ:
-            state.frequency = _f(p)
-
-        elif t in (T_PLUG, T_CHARGE):
-            if t == T_PLUG:
-                state.plug = _bool(p)
-            else:
-                state.charge = _bool(p)
-            _update_status()
-
-        elif t == T_VEH_CONFIG:
-            _parse_vehicle_config(p)
-
-        elif t == T_VEH_SOC:
-            _parse_soc(p)
-
-        _update_phase_powers()
-
+        cp.handle(msg.topic, msg.payload)
     except Exception:  # noqa: BLE001
         et, eo, tb = sys.exc_info()
         log.error("Fehler in on_message: %r (Zeile %s)", eo, tb.tb_lineno)
 
 
-def _update_phase_powers():
-    if state.powers and len(state.powers) >= 3:
-        pw = state.powers
-    else:
-        pw = [state.currents[i] * state.voltages[i] for i in range(3)]
-    dbus_service["/Ac/L1/Power"] = round(pw[0], 1)
-    dbus_service["/Ac/L2/Power"] = round(pw[1], 1)
-    dbus_service["/Ac/L3/Power"] = round(pw[2], 1)
-
-
-def _update_status():
-    # Venus EVCS /Status: 0=getrennt, 1=verbunden, 2=laedt
-    if not state.plug:
-        st = 0
-    elif state.charge:
-        st = 2
-    else:
-        st = 1
-    dbus_service["/Status"] = st
-    dbus_service["/StartStop"] = 1 if state.charge else 0
-    if state.start_of_charge:
-        dbus_service["/ChargingTime"] = int(time() - state.start_of_charge)
-    else:
-        dbus_service["/ChargingTime"] = 0
-
-
-def _parse_vehicle_config(payload):
+# --------------------------------------------------------------------------
+# Periodische Aufgaben: UpdateIndex, Watchdog, status.json
+# --------------------------------------------------------------------------
+def write_status():
     try:
-        cfg = json.loads(payload)
-    except (ValueError, TypeError):
-        return
-    if isinstance(cfg, dict):
-        if CFG_TEMPLATE_ID == 0 and "charge_template" in cfg:
-            state.template_id = int(cfg["charge_template"])
-        mode = cfg.get("chargemode")
-        if mode:
-            state.chargemode = mode
-            dbus_service["/Mode"] = CHARGEMODE_TO_MODE.get(mode, 0)
+        data = {
+            "updated": int(time()),
+            "control_enabled": CONTROL_ENABLED,
+            "broker": "%s:%d" % (BROKER_ADDR, BROKER_PORT),
+            "chargepoints": [cp.snapshot() for cp in chargepoints.values()],
+        }
+        tmp = STATUS_FILE + ".tmp"
+        with open(tmp, "w") as fh:
+            json.dump(data, fh)
+        os.replace(tmp, STATUS_FILE)
+    except Exception as e:  # noqa: BLE001
+        log.debug("status.json konnte nicht geschrieben werden: %s", e)
 
 
-def _parse_soc(payload):
-    try:
-        cfg = json.loads(payload)
-        if isinstance(cfg, dict) and "soc" in cfg:
-            state.soc = float(cfg["soc"])
-    except (ValueError, TypeError):
-        pass
-
-
-# --------------------------------------------------------------------------
-# Steuerung  (Venus -> openWB), nur wenn CONTROL_ENABLED
-# --------------------------------------------------------------------------
-def _publish_chargemode(mode):
-    tpl = state.template_id
-    topic = "%s/set/vehicle/template/charge_template/%d/chargemode/selected" % (MQTT_ROOT, tpl)
-    client.publish(topic, mode, qos=0, retain=False)
-    log.info("STEUERUNG chargemode -> %s (template %d)", mode, tpl)
-
-
-def _publish_current(amp):
-    tpl = state.template_id
-    topic = "%s/set/vehicle/template/charge_template/%d/chargemode/instant_charging/current" % (MQTT_ROOT, tpl)
-    client.publish(topic, str(int(amp)), qos=0, retain=False)
-    log.info("STEUERUNG Sollstrom -> %d A (template %d)", int(amp), tpl)
-
-
-def handle_changed_value(path, value):
-    if not CONTROL_ENABLED:
-        log.warning("Steuerung deaktiviert - ignoriere Aenderung %s=%s", path, value)
-        return True
-    if client is None:
-        return True
-    try:
-        if path == "/StartStop":
-            _publish_chargemode("instant_charging" if value == 1 else "stop")
-        elif path == "/SetCurrent":
-            _publish_current(value)
-        elif path == "/MaxCurrent":
-            _publish_current(value)
-        elif path == "/Mode":
-            if value == 0:
-                _publish_chargemode("instant_charging")
-            elif value == 1:
-                _publish_chargemode("pv_charging")
-            elif value == 2:
-                _publish_chargemode("scheduled_charging")
-    except Exception:  # noqa: BLE001
-        et, eo, tb = sys.exc_info()
-        log.error("Fehler in handle_changed_value: %r (Zeile %s)", eo, tb.tb_lineno)
-    return True
-
-
-# --------------------------------------------------------------------------
-# D-Bus Service
-# --------------------------------------------------------------------------
-def build_service():
-    _kwh = lambda p, v: "%.2f kWh" % v
-    _a   = lambda p, v: "%.1f A" % v
-    _w   = lambda p, v: "%.0f W" % v
-    _v   = lambda p, v: "%.1f V" % v
-    _s   = lambda p, v: "%d s" % v
-    _t   = lambda p, v: str(v)
-
-    servicename = "com.victronenergy.evcharger.openwb2_%d" % DEVICE_INST
-    svc = VeDbusService(servicename)
-
-    svc.add_path("/Mgmt/ProcessName", __file__)
-    svc.add_path("/Mgmt/ProcessVersion",
-                 "1.0 auf Python " + platform.python_version())
-    svc.add_path("/Mgmt/Connection", "MQTT openWB2 %s:%d" % (BROKER_ADDR, BROKER_PORT))
-
-    svc.add_path("/DeviceInstance", DEVICE_INST)
-    svc.add_path("/ProductId", 0xC024)
-    svc.add_path("/ProductName", "openWB 2.x")
-    svc.add_path("/CustomName", DEVICE_NAME, writeable=True)
-    svc.add_path("/FirmwareVersion", "1.0")
-    svc.add_path("/HardwareVersion", 2)
-    svc.add_path("/Serial", "openwb2-cp%d" % CP_ID)
-    svc.add_path("/Connected", 1)
-    svc.add_path("/UpdateIndex", 0)
-
-    svc.add_path("/Status", 0)
-
-    paths = {
-        "/Ac/Power":            {"init": 0, "fmt": _w,   "w": False},
-        "/Ac/L1/Power":         {"init": 0, "fmt": _w,   "w": False},
-        "/Ac/L2/Power":         {"init": 0, "fmt": _w,   "w": False},
-        "/Ac/L3/Power":         {"init": 0, "fmt": _w,   "w": False},
-        "/Ac/Energy/Forward":   {"init": 0, "fmt": _kwh, "w": False},
-        "/Ac/Voltage":          {"init": 0, "fmt": _v,   "w": False},
-        "/Current":             {"init": 0, "fmt": _a,   "w": False},
-        "/ChargingTime":        {"init": 0, "fmt": _s,   "w": False},
-        "/NrOfPhases":          {"init": 1, "fmt": _t,   "w": False},
-        "/Position":            {"init": POSITION,    "fmt": _t, "w": True},
-        "/MaxCurrent":          {"init": MAX_CURRENT, "fmt": _a, "w": True},
-        "/SetCurrent":          {"init": 0, "fmt": _a,   "w": True},
-        "/Mode":                {"init": 0, "fmt": _t,   "w": True},
-        "/StartStop":           {"init": 0, "fmt": _t,   "w": True},
-    }
-    for path, s in paths.items():
-        svc.add_path(path, s["init"], gettextcallback=s["fmt"],
-                     writeable=s["w"],
-                     onchangecallback=handle_changed_value if s["w"] else None)
-    return svc
-
-
-# --------------------------------------------------------------------------
-# Watchdog / UpdateIndex
-# --------------------------------------------------------------------------
 def periodic():
-    if TIMEOUT != 0 and state.last_msg and (time() - state.last_msg) > TIMEOUT:
-        log.error("Timeout: seit %d s keine MQTT-Nachricht. Beende (Neustart durch Dienst).",
-                  TIMEOUT)
+    newest = max((cp.last_msg for cp in chargepoints.values()), default=0)
+    if TIMEOUT != 0 and newest and (time() - newest) > TIMEOUT:
+        log.error("Timeout: seit %d s keine MQTT-Nachricht. Beende (Neustart durch Dienst).", TIMEOUT)
         sys.exit(1)
-    idx = (dbus_service["/UpdateIndex"] + 1) % 256
-    dbus_service["/UpdateIndex"] = idx
-    if state.start_of_charge:
-        dbus_service["/ChargingTime"] = int(time() - state.start_of_charge)
+    for cp in chargepoints.values():
+        cp.tick()
+    write_status()
     return True
 
 
@@ -429,14 +433,10 @@ def periodic():
 # main
 # --------------------------------------------------------------------------
 def main():
-    global client, dbus_service
+    global client
 
     from dbus.mainloop.glib import DBusGMainLoop  # pyright: ignore[reportMissingImports]
     DBusGMainLoop(set_as_default=True)
-
-    dbus_service = build_service()
-    log.info("D-Bus Service angelegt: com.victronenergy.evcharger.openwb2_%d "
-             "(Steuerung: %s)", DEVICE_INST, "AN" if CONTROL_ENABLED else "AUS")
 
     client = make_mqtt_client("dbus-openwb2-%d" % DEVICE_INST)
     client.on_connect = on_connect
@@ -446,6 +446,18 @@ def main():
         client.username_pw_set(MQTT_USER, MQTT_PASS)
     if TLS_ENABLED:
         client.tls_set(tls_version=2)
+
+    # Ladepunkte anlegen (ein Service je ID, Instanz fortlaufend)
+    for i, cp_id in enumerate(CP_IDS):
+        inst = DEVICE_INST + i
+        name = DEVICE_NAME if len(CP_IDS) == 1 else "%s LP%d" % (DEVICE_NAME, cp_id)
+        cp = ChargePoint(cp_id, inst, name, client)
+        chargepoints[cp_id] = cp
+        for t in cp.topics:
+            topic_index[t] = cp
+        log.info("Ladepunkt %d -> Service openwb2_%d (%s)", cp_id, inst, name)
+
+    log.info("Steuerung: %s", "AN" if CONTROL_ENABLED else "AUS")
 
     client.connect(BROKER_ADDR, BROKER_PORT, keepalive=60)
     client.loop_start()

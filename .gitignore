@@ -1,6 +1,9 @@
 # lokale Konfiguration (enthält evtl. Zugangsdaten) – nie committen
 config.ini
 
+# Laufzeit-Status, den der Treiber schreibt
+status.json
+
 # Python
 __pycache__/
 *.pyc

@@ -39,7 +39,9 @@ def make_mqtt_client(client_id):
 HERE = os.path.dirname(os.path.realpath(__file__))
 CONFIG_FILE = os.path.join(HERE, "config.ini")
 SAMPLE_FILE = os.path.join(HERE, "config.sample.ini")
+STATUS_FILE = os.path.join(HERE, "status.json")
 DRIVER_SERVICE = "dbus-openwb2"
+LOG_FILE = "/data/log/dbus-openwb2/current"
 
 DEFAULTS = {
     "DEFAULT": {"logging": "WARNING", "device_name": "openWB",
@@ -174,6 +176,34 @@ def driver_status():
         return "Status unbekannt: %s" % e
 
 
+def read_status():
+    """Live-Werte, die der Treiber in status.json schreibt."""
+    try:
+        with open(STATUS_FILE) as fh:
+            data = json.load(fh)
+        data["stale"] = (time.time() - data.get("updated", 0)) > 15
+        return data
+    except Exception:  # noqa: BLE001
+        return {"chargepoints": [], "error": "noch keine Live-Daten "
+                "(laeuft der Treiber und ist er verbunden?)"}
+
+
+def read_log(lines=120):
+    """Letzte Zeilen des Treiber-Logs (mit tai64nlocal, falls vorhanden)."""
+    if not os.path.exists(LOG_FILE):
+        return "Logdatei %s nicht gefunden (nur auf dem Venus-Geraet vorhanden)." % LOG_FILE
+    try:
+        raw = subprocess.check_output(["tail", "-n", str(lines), LOG_FILE], timeout=10)
+        try:
+            p = subprocess.run(["tai64nlocal"], input=raw, stdout=subprocess.PIPE, timeout=10)
+            raw = p.stdout or raw
+        except Exception:  # noqa: BLE001
+            pass
+        return raw.decode("utf-8", "ignore")
+    except Exception as e:  # noqa: BLE001
+        return "Log konnte nicht gelesen werden: %s" % e
+
+
 # --------------------------------------------------------------------------
 # HTTP
 # --------------------------------------------------------------------------
@@ -201,6 +231,10 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, json.dumps(read_config()))
         elif self.path == "/api/status":
             self._send(200, json.dumps({"driver": driver_status()}))
+        elif self.path == "/api/live":
+            self._send(200, json.dumps(read_status()))
+        elif self.path == "/api/log":
+            self._send(200, read_log(), "text/plain; charset=utf-8")
         else:
             self._send(404, json.dumps({"error": "not found"}))
 
@@ -316,6 +350,23 @@ PAGE = r"""<!doctype html>
   .status{font-size:12.5px;color:var(--muted);margin-top:12px;text-align:center}
   .foot{text-align:center;color:var(--muted);font-size:12px;margin-top:26px}
   .foot b{color:var(--fg)}
+
+  /* Live-Status */
+  .lp{border:1px solid var(--border);border-radius:10px;padding:12px 14px;margin-top:10px}
+  .lp .lphead{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px}
+  .lp .lpname{font-weight:600}
+  .pill{font-size:11.5px;font-weight:700;padding:3px 9px;border-radius:999px}
+  .p-charging{background:rgba(58,169,60,.16);color:var(--accent2)}
+  .p-connected{background:rgba(31,111,178,.16);color:var(--accent)}
+  .p-idle{background:var(--chip);color:var(--muted)}
+  .metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(90px,1fr));gap:10px}
+  .metric{background:var(--bg);border-radius:9px;padding:9px 11px}
+  .metric .v{font-size:18px;font-weight:700;line-height:1.1}
+  .metric .k{font-size:11px;color:var(--muted);margin-top:2px}
+  .stale{color:var(--err);font-size:12px;margin-top:8px}
+  .logbox{background:#0d1117;color:#c8d2dc;border-radius:9px;padding:12px;
+    font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    max-height:320px;overflow:auto;white-space:pre-wrap;margin-top:10px}
 </style>
 </head>
 <body>
@@ -362,6 +413,13 @@ PAGE = r"""<!doctype html>
   </div></div>
 
   <div id="msg"></div>
+
+  <div class="card" id="livecard" style="display:none">
+    <h2><span class="ico g">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
+    </span>Live-Status</h2>
+    <div id="live"></div>
+  </div>
 
   <div class="card">
     <h2><span class="ico g">
@@ -428,6 +486,17 @@ PAGE = r"""<!doctype html>
     <button class="ghost" onclick="restart()">&#8635;&nbsp; Nur neu starten</button>
   </div>
   <div class="status" id="drvstatus"></div>
+
+  <div class="card">
+    <h2><span class="ico o">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 17l6-6-6-6"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
+    </span>Treiber-Log</h2>
+    <div class="bar" style="margin-top:4px">
+      <button class="ghost" onclick="loadLog()">Log laden</button>
+      <button class="ghost" onclick="$('logbox').textContent=''">Leeren</button>
+    </div>
+    <pre id="logbox" class="logbox"></pre>
+  </div>
 
   <div class="foot">
     <b>dbus-openwb2</b> &middot; openWB 2.x als <code>com.victronenergy.evcharger</code> in Venus OS<br>
@@ -514,7 +583,40 @@ async function status(){
   try{ const r=await (await fetch("/api/status")).json();
     $("drvstatus").textContent="Treiber-Status: "+r.driver; }catch(e){}
 }
+function fmt(n){ return (n===null||n===undefined)?"–":n; }
+async function pollLive(){
+  try{
+    const d = await (await fetch("/api/live")).json();
+    const cps = d.chargepoints||[];
+    if(!cps.length){ $("livecard").style.display="none"; return; }
+    $("livecard").style.display="block";
+    let h="";
+    if(d.stale) h+="<div class='stale'>⚠ Live-Daten veraltet – Treiber getrennt?</div>";
+    for(const c of cps){
+      const cls = c.charging?"p-charging":(c.plugged?"p-connected":"p-idle");
+      const soc = (c.soc!==null&&c.soc!==undefined)?`<div class="metric"><div class="v">${Math.round(c.soc)} %</div><div class="k">Fahrzeug-SoC</div></div>`:"";
+      h+=`<div class="lp">
+        <div class="lphead"><span class="lpname">${c.name} <small style="color:var(--muted)">· LP ${c.id}</small></span>
+          <span class="pill ${cls}">${c.status}</span></div>
+        <div class="metrics">
+          <div class="metric"><div class="v">${fmt(c.power)} W</div><div class="k">Leistung</div></div>
+          <div class="metric"><div class="v">${fmt(c.set_current)} A</div><div class="k">Sollstrom</div></div>
+          <div class="metric"><div class="v">${fmt(c.phases)}</div><div class="k">Phasen</div></div>
+          <div class="metric"><div class="v">${fmt(c.energy_kwh)}</div><div class="k">kWh gesamt</div></div>
+          ${soc}
+        </div></div>`;
+    }
+    $("live").innerHTML=h;
+  }catch(e){ /* Treiber evtl. aus */ }
+}
+async function loadLog(){
+  $("logbox").textContent="lade …";
+  try{ $("logbox").textContent = await (await fetch("/api/log")).text();
+    $("logbox").scrollTop = $("logbox").scrollHeight; }
+  catch(e){ $("logbox").textContent="Fehler: "+e; }
+}
 load();
+pollLive(); setInterval(pollLive, 3000);
 </script>
 </body></html>
 """
