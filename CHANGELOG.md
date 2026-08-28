@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.1.0] – 2026-08-28
+
+### Neu / Verbessert
+- Deutlich hochwertigeres Web-Interface: Hero-Header mit Farbverlauf
+  (openWB-Grün → Victron-Blau), animierter Energiefluss (Wallbox → Speicher),
+  Marken-Badges (openWB / Victron Energy), Sektions-Icons, Verlaufs-Button
+  und Footer. Alle Grafiken als eingebettetes SVG → voll offline-fähig.
+- README: Screenshot des Web-Interface (`docs/web-interface.png`).
+- README: Abschnitt „openWB vorbereiten (MQTT)" – Direktverbindung (Port 1883)
+  und MQTT-Brücke als Alternative, inkl. Feld-für-Feld-Tabelle.
+- `.gitattributes`: Binärdateien (PNG/JPG/ZIP) explizit als `binary` markiert.
+
 ## [1.0.0] – 2026-08-28
 
 Erste Veröffentlichung.
