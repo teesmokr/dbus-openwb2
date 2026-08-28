@@ -1,4 +1,6 @@
 #!/bin/sh
 echo "*** starting dbus-openwb2-web ***"
 exec 2>&1
-exec /data/etc/dbus-openwb2/webconfig.py
+# Pfad relativ zum echten Ort des run-Scripts (folgt dem /service-Symlink).
+DIR=$(dirname "$(readlink -f "$0")")
+exec "$DIR/../webconfig.py"

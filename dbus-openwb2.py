@@ -25,9 +25,17 @@ from time import time, sleep
 from functools import partial
 
 from gi.repository import GLib  # pyright: ignore[reportMissingImports]
-import paho.mqtt.client as mqtt
 
-sys.path.insert(1, os.path.join(os.path.dirname(__file__), "ext", "velib_python"))
+HERE = os.path.dirname(os.path.realpath(__file__))
+
+# paho-mqtt: System bevorzugen, sonst die gebuendelte Kopie unter ext/ nutzen
+try:
+    import paho.mqtt.client as mqtt
+except ImportError:
+    sys.path.insert(1, os.path.join(HERE, "ext", "paho-mqtt"))
+    import paho.mqtt.client as mqtt
+
+sys.path.insert(1, os.path.join(HERE, "ext", "velib_python"))
 from vedbus import VeDbusService  # noqa: E402
 
 
@@ -40,26 +48,43 @@ def make_mqtt_client(client_id):
         return mqtt.Client(client_id)
 
 
+def _status_dir():
+    """Verzeichnis fuer status.json — bevorzugt ein tmpfs (RAM), um eMMC-Flash zu schonen."""
+    for base in ("/run", "/var/volatile/run", "/var/volatile", "/tmp"):
+        if os.path.isdir(base):
+            d = os.path.join(base, "dbus-openwb2")
+            try:
+                os.makedirs(d, exist_ok=True)
+                return d
+            except OSError:
+                continue
+    return HERE
+
+
 # --------------------------------------------------------------------------
 # Konfiguration laden
 # --------------------------------------------------------------------------
-HERE = os.path.dirname(os.path.realpath(__file__))
 CONFIG_FILE = os.path.join(HERE, "config.ini")
-STATUS_FILE = os.path.join(HERE, "status.json")
+STATUS_FILE = os.path.join(_status_dir(), "status.json")
+
+
+def _fatal(msg):
+    print("ERROR: %s Neustart in 60 s." % msg)
+    sleep(60)
+    sys.exit(1)
 
 
 def load_config():
     if not os.path.exists(CONFIG_FILE):
-        print("ERROR: config.ini nicht gefunden. config.sample.ini kopieren "
-              "oder das Web-Interface verwenden. Neustart in 60 s.")
-        sleep(60)
-        sys.exit(1)
+        _fatal("config.ini nicht gefunden. config.sample.ini kopieren oder das Web-Interface verwenden.")
     cfg = configparser.ConfigParser()
-    cfg.read(CONFIG_FILE)
-    if cfg["MQTT"]["broker_address"] in ("", "IP_ADDR_OR_FQDN"):
-        print("ERROR: Broker-Adresse ist noch nicht konfiguriert. Neustart in 60 s.")
-        sleep(60)
-        sys.exit(1)
+    try:
+        cfg.read(CONFIG_FILE)
+        broker = cfg["MQTT"]["broker_address"]
+    except (configparser.Error, KeyError) as e:
+        _fatal("config.ini ist defekt oder unvollstaendig (%s)." % e)
+    if broker in ("", "IP_ADDR_OR_FQDN"):
+        _fatal("Broker-Adresse ist noch nicht konfiguriert.")
     return cfg
 
 
@@ -77,27 +102,33 @@ log = logging.getLogger("dbus-openwb2")
 # --------------------------------------------------------------------------
 # Konfig-Werte
 # --------------------------------------------------------------------------
-MQTT_ROOT      = config["MQTT"].get("mqtt_root", "openWB").rstrip("/")
-BROKER_ADDR    = config["MQTT"]["broker_address"]
-BROKER_PORT    = int(config["MQTT"].get("broker_port", "1883"))
-MQTT_USER      = config["MQTT"].get("username", "") or None
-MQTT_PASS      = config["MQTT"].get("password", "") or None
-TLS_ENABLED    = config["MQTT"].get("tls_enabled", "0") == "1"
+try:
+    MQTT_ROOT      = config["MQTT"].get("mqtt_root", "openWB").rstrip("/")
+    BROKER_ADDR    = config["MQTT"]["broker_address"]
+    BROKER_PORT    = int(config["MQTT"].get("broker_port", "1883"))
+    MQTT_USER      = config["MQTT"].get("username", "") or None
+    MQTT_PASS      = config["MQTT"].get("password", "") or None
+    TLS_ENABLED    = config["MQTT"].get("tls_enabled", "0") == "1"
 
-# Ladepunkt-IDs koennen als Liste angegeben werden: "1" oder "1,2"
-CP_IDS = [int(x) for x in str(config["WALLBOX"].get("chargepoint_id", "1")).replace(" ", "").split(",") if x]
-MAX_CURRENT    = int(config["WALLBOX"].get("max_current", "16"))
-POSITION       = int(config["WALLBOX"].get("position", "1"))
-NOM_VOLTAGE    = float(config["WALLBOX"].get("nominal_voltage", "230"))
+    # Ladepunkt-IDs koennen als Liste angegeben werden: "1" oder "1,2"
+    CP_IDS = [int(x) for x in str(config["WALLBOX"].get("chargepoint_id", "1")).replace(" ", "").split(",") if x]
+    MAX_CURRENT    = int(config["WALLBOX"].get("max_current", "16"))
+    POSITION       = int(config["WALLBOX"].get("position", "1"))
+    NOM_VOLTAGE    = float(config["WALLBOX"].get("nominal_voltage", "230"))
 
-DEVICE_NAME    = config["DEFAULT"].get("device_name", "openWB")
-DEVICE_INST    = int(config["DEFAULT"].get("device_instance", "53"))
-TIMEOUT        = int(config["DEFAULT"].get("timeout", "60"))
+    DEVICE_NAME    = config["DEFAULT"].get("device_name", "openWB")
+    DEVICE_INST    = int(config["DEFAULT"].get("device_instance", "53"))
+    TIMEOUT        = int(config["DEFAULT"].get("timeout", "60"))
 
-CONTROL_ENABLED = config["CONTROL"].get("enabled", "0") == "1" \
-    if config.has_section("CONTROL") else False
-CFG_TEMPLATE_ID = int(config["CONTROL"].get("charge_template_id", "0")) \
-    if config.has_section("CONTROL") else 0
+    CONTROL_ENABLED = config["CONTROL"].get("enabled", "0") == "1" \
+        if config.has_section("CONTROL") else False
+    CFG_TEMPLATE_ID = int(config["CONTROL"].get("charge_template_id", "0")) \
+        if config.has_section("CONTROL") else 0
+except (ValueError, KeyError) as e:
+    _fatal("config.ini enthaelt ungueltige Werte (%s)." % e)
+
+if not CP_IDS:
+    _fatal("Keine gueltige Ladepunkt-ID in [WALLBOX] chargepoint_id.")
 
 
 # openWB chargemode  ->  Venus /Mode  (0=Manuell, 1=Auto, 2=Zeitplan)
@@ -168,13 +199,13 @@ class ChargePoint:
         sn = "com.victronenergy.evcharger.openwb2_%d" % self.instance
         svc = VeDbusService(sn)
         svc.add_path("/Mgmt/ProcessName", __file__)
-        svc.add_path("/Mgmt/ProcessVersion", "1.4.0 auf Python " + platform.python_version())
+        svc.add_path("/Mgmt/ProcessVersion", "1.5.0 auf Python " + platform.python_version())
         svc.add_path("/Mgmt/Connection", "MQTT openWB2 %s:%d" % (BROKER_ADDR, BROKER_PORT))
         svc.add_path("/DeviceInstance", self.instance)
         svc.add_path("/ProductId", 0xC024)
         svc.add_path("/ProductName", "openWB 2.x")
         svc.add_path("/CustomName", self.name, writeable=True)
-        svc.add_path("/FirmwareVersion", "1.2")
+        svc.add_path("/FirmwareVersion", "1.5")
         svc.add_path("/HardwareVersion", 2)
         svc.add_path("/Serial", "openwb2-cp%d" % self.id)
         svc.add_path("/Connected", 1)
@@ -304,7 +335,15 @@ class ChargePoint:
         self.svc["/Ac/L3/Power"] = round(pw[2], 1)
 
     def _status(self):
-        st = 0 if not self.plug else (2 if self.charge else 1)
+        # Venus EVCS /Status: 0=getrennt, 1=verbunden, 2=laedt, 4=Warte auf Sonne
+        if not self.plug:
+            st = 0
+        elif self.charge:
+            st = 2
+        elif self.chargemode in ("pv_charging", "eco_charging"):
+            st = 4  # Waiting for sun (PV-Ueberschuss abwarten)
+        else:
+            st = 1
         self.svc["/Status"] = st
         self.svc["/StartStop"] = 1 if self.charge else 0
         self._update_session()
@@ -334,7 +373,8 @@ class ChargePoint:
         self._update_session()
 
     def snapshot(self):
-        st = {0: "Getrennt", 1: "Verbunden", 2: "Laedt"}.get(self.svc["/Status"], "?")
+        st = {0: "Getrennt", 1: "Verbunden", 2: "Laedt",
+              4: "Warte auf Sonne"}.get(self.svc["/Status"], "?")
         sess = self.svc["/Session/Energy"]
         return {
             "id": self.id, "instance": self.instance, "name": self.name,
@@ -356,9 +396,11 @@ class ChargePoint:
         log.info("STEUERUNG LP%d chargemode -> %s (tpl %d)", self.id, mode, self.template_id)
 
     def publish_current(self, amp):
+        # auf sinnvollen Bereich begrenzen (6 A Minimum, Max aus Config)
+        amp = max(6, min(int(round(float(amp))), MAX_CURRENT))
         t = "%s/set/vehicle/template/charge_template/%d/chargemode/instant_charging/current" % (MQTT_ROOT, self.template_id)
-        self.client.publish(t, str(int(amp)), qos=0, retain=False)
-        log.info("STEUERUNG LP%d Sollstrom -> %d A (tpl %d)", self.id, int(amp), self.template_id)
+        self.client.publish(t, str(amp), qos=0, retain=False)
+        log.info("STEUERUNG LP%d Sollstrom -> %d A (tpl %d)", self.id, amp, self.template_id)
 
 
 # --------------------------------------------------------------------------
@@ -386,6 +428,7 @@ def _arr(payload):
 chargepoints = {}   # cp_id -> ChargePoint
 topic_index = {}    # topic -> ChargePoint
 client = None
+START_TS = 0.0      # Startzeitpunkt fuer den Watchdog
 
 
 def _on_change(cp, path, value):
@@ -395,8 +438,10 @@ def _on_change(cp, path, value):
     try:
         if path == "/StartStop":
             cp.publish_chargemode("instant_charging" if value == 1 else "stop")
-        elif path in ("/SetCurrent", "/MaxCurrent"):
+        elif path == "/SetCurrent":
             cp.publish_current(value)
+        elif path == "/MaxCurrent":
+            pass  # nur lokales Limit, kein openWB-Ladebefehl
         elif path == "/Mode":
             cp.publish_chargemode({0: "instant_charging", 1: "pv_charging",
                                    2: "scheduled_charging"}.get(value, "instant_charging"))
@@ -450,21 +495,27 @@ def write_status():
 
 
 def periodic():
-    newest = max((cp.last_msg for cp in chargepoints.values()), default=0)
-    if TIMEOUT != 0 and newest and (time() - newest) > TIMEOUT:
-        log.error("Timeout: seit %d s keine MQTT-Nachricht. Beende (Neustart durch Dienst).", TIMEOUT)
-        sys.exit(1)
-    for cp in chargepoints.values():
-        cp.tick()
-    write_status()
-    return True
+    try:
+        newest = max((cp.last_msg for cp in chargepoints.values()), default=0)
+        ref = newest if newest else START_TS
+        if TIMEOUT != 0 and ref and (time() - ref) > TIMEOUT:
+            log.error("Timeout: seit %d s keine MQTT-Nachricht. Beende (Neustart durch Dienst).", TIMEOUT)
+            os._exit(1)  # zuverlaessiger Prozess-Abbruch aus dem GLib-Callback
+        for cp in chargepoints.values():
+            cp.tick()
+        write_status()
+    except Exception:  # noqa: BLE001
+        et, eo, tb = sys.exc_info()
+        log.error("Fehler in periodic(): %r (Zeile %s)", eo, tb.tb_lineno)
+    return True  # Timer bleibt in jedem Fall aktiv
 
 
 # --------------------------------------------------------------------------
 # main
 # --------------------------------------------------------------------------
 def main():
-    global client
+    global client, START_TS
+    START_TS = time()
 
     from dbus.mainloop.glib import DBusGMainLoop  # pyright: ignore[reportMissingImports]
     DBusGMainLoop(set_as_default=True)
@@ -490,7 +541,13 @@ def main():
 
     log.info("Steuerung: %s", "AN" if CONTROL_ENABLED else "AUS")
 
-    client.connect(BROKER_ADDR, BROKER_PORT, keepalive=60)
+    # connect_async + loop_start: paho verbindet selbststaendig mit Backoff und
+    # blockiert/craeshet nicht, wenn die openWB beim Start (noch) nicht erreichbar ist
+    try:
+        client.reconnect_delay_set(min_delay=1, max_delay=60)
+    except Exception:  # noqa: BLE001 (aeltere paho-Versionen)
+        pass
+    client.connect_async(BROKER_ADDR, BROKER_PORT, keepalive=60)
     client.loop_start()
 
     GLib.timeout_add_seconds(2, periodic)

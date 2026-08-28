@@ -8,11 +8,15 @@
 #
 # Manuelle Installation ohne SetupHelper: stattdessen ./install.sh verwenden.
 #
-# Hinweis: Gegen die SetupHelper-HelperResources-API entwickelt; je nach
-# SetupHelper-Version koennen kleine Anpassungen noetig sein. Beta.
+# Hinweis: Gegen die SetupHelper-HelperResources-API entwickelt; auf Hardware
+# noch nicht getestet (Beta). Die Reboot-Persistenz ist zusaetzlich ueber einen
+# rc.local-Eintrag abgesichert, damit die Dienste unabhaengig von der
+# SetupHelper-Version einen normalen Neustart ueberleben.
 
 pkgDir="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd )"
 pkgName=$( basename "$pkgDir" )
+
+RELINK="ln -sfn \"$pkgDir/service\" /service/dbus-openwb2; ln -sfn \"$pkgDir/service-web\" /service/dbus-openwb2-web"
 
 # SetupHelper einbinden -------------------------------------------------------
 source "/data/SetupHelper/HelperResources/IncludeHelpers" 2>/dev/null
@@ -30,30 +34,40 @@ if [ $scriptAction == 'NONE' ] ; then
     standardActionPrompt
 fi
 
-link_services()
-{
-    ln -sfn "$pkgDir/service"     "/service/dbus-openwb2"
-    ln -sfn "$pkgDir/service-web" "/service/dbus-openwb2-web"
-}
-
 normalize_and_perms()
 {
     for f in dbus-openwb2.py webconfig.py \
              service/run service/log/run service-web/run service-web/log/run \
-             install.sh uninstall.sh restart.sh ; do
+             install.sh uninstall.sh restart.sh setup ; do
         if [ -f "$pkgDir/$f" ]; then
-            sed -i 's/\r$//' "$pkgDir/$f"
+            grep -q $'\r' "$pkgDir/$f" && sed -i 's/\r$//' "$pkgDir/$f"
             chmod 755 "$pkgDir/$f"
         fi
     done
+}
+
+link_services()
+{
+    # 1) SetupHelper-Weg (persistent nach /opt/victronenergy/service), falls verfuegbar
+    if command -v installService >/dev/null 2>&1 ; then
+        installService dbus-openwb2     "$pkgDir/service"     2>/dev/null
+        installService dbus-openwb2-web "$pkgDir/service-web" 2>/dev/null
+    fi
+    # 2) Direkte Symlinks -> sofort aktiv
+    eval "$RELINK"
+    # 3) rc.local-Eintrag -> garantiert Reboot-Persistenz (svscan startet die Links)
+    grep -qF "$RELINK" /data/rc.local 2>/dev/null || {
+        [ -f /data/rc.local ] || { echo "#!/bin/bash" > /data/rc.local; chmod 755 /data/rc.local; }
+        echo "$RELINK" >> /data/rc.local
+    }
 }
 
 #### INSTALL -----------------------------------------------------------------
 if [ $scriptAction == 'INSTALL' ] ; then
     logMessage "dbus-openwb2: Installation"
 
-    # Abhaengigkeit paho-mqtt
-    if ! python3 -c "import paho.mqtt.client" 2>/dev/null ; then
+    # Abhaengigkeit paho-mqtt (gebuendelte Kopie unter ext/ bevorzugen)
+    if ! PYTHONPATH="$pkgDir/ext/paho-mqtt" python3 -c "import paho.mqtt.client" 2>/dev/null ; then
         python3 -m pip install paho-mqtt \
             || { opkg update && opkg install python3-pip && python3 -m pip install paho-mqtt; }
     fi
@@ -67,24 +81,34 @@ if [ $scriptAction == 'INSTALL' ] ; then
     normalize_and_perms
     link_services
 
-    # Dienste neu starten, damit bei einem Update die neuen Dateien greifen
-    sleep 3
-    svc -t /service/dbus-openwb2     2>/dev/null || true
-    svc -t /service/dbus-openwb2-web 2>/dev/null || true
+    # Dienste (neu) starten, damit bei einem Update die neuen Dateien greifen
+    for s in dbus-openwb2 dbus-openwb2-web; do
+        for _ in 1 2 3 4 5 6 7 8; do
+            svok "/service/$s" 2>/dev/null && break
+            sleep 1
+        done
+        svc -t "/service/$s" 2>/dev/null || true
+    done
 
-    # neue Ladestation soll sofort erscheinen
     restartGui=true
-
     endScript
 fi
 
 #### UNINSTALL ---------------------------------------------------------------
 if [ $scriptAction == 'UNINSTALL' ] ; then
     logMessage "dbus-openwb2: Deinstallation"
-    rm -f /service/dbus-openwb2 /service/dbus-openwb2-web
-    kill $(pgrep -f "supervise dbus-openwb2") 2>/dev/null
-    kill $(pgrep -f "dbus-openwb2.py") 2>/dev/null
-    kill $(pgrep -f "webconfig.py") 2>/dev/null
+    command -v removeService >/dev/null 2>&1 && {
+        removeService dbus-openwb2     2>/dev/null
+        removeService dbus-openwb2-web 2>/dev/null
+    }
+    # rc.local-Eintrag entfernen
+    sed -i "\#$pkgDir/service#d" /data/rc.local 2>/dev/null
+    for s in dbus-openwb2 dbus-openwb2-web; do
+        svc -dx "/service/$s" "/service/$s/log" 2>/dev/null
+        rm -f "/service/$s"
+    done
+    kill "$(pgrep -f "dbus-openwb2.py")" 2>/dev/null
+    kill "$(pgrep -f "webconfig.py")" 2>/dev/null
     restartGui=true
     endScript
 fi

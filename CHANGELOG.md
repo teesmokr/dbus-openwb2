@@ -1,5 +1,50 @@
 # Changelog
 
+## [1.5.0] – 2026-08-28
+
+Ergebnis eines umfassenden Multi-Agenten-Reviews (Korrektheit, Sicherheit,
+Robustheit, Protokolltreue, Shell/Install, UX) mit adversarialer Verifikation.
+
+### Sicherheit
+- **XSS behoben**: alle openWB-/Config-Werte im Web-Interface werden escaped;
+  Ladepunkt-Auswahl per Event-Delegation statt interpoliertem `onclick`.
+- **CSRF-Schutz**: POST-Endpunkte verlangen JSON-Content-Type + eigenen Header
+  und prüfen die Origin gegen den Host.
+- **Keine Geheimnisse mehr ans UI**: MQTT-Passwort wird (wie der Web-Passwort-Hash)
+  nicht mehr über `/api/config` ausgeliefert; `config.ini` wird auf `600` gesetzt.
+- POST-Body-Größe begrenzt.
+
+### Behoben (Korrektheit/Robustheit)
+- **install.sh nutzte `python`** (existiert auf Venus OS nicht) → durchgängig
+  `python3`; kein `opkg update` mehr bei jedem Boot.
+- **Log-Viewer las falschen Pfad** (`/data/log` statt `/var/log`) → jetzt korrekt.
+- **Watchdog**: `os._exit` statt `sys.exit` im GLib-Callback (Neustart greift jetzt);
+  feuert auch, wenn nie eine Nachricht ankam; `periodic()` gegen Exceptions gehärtet.
+- **MQTT-Reconnect**: `connect_async` + Backoff — kein Crash-Loop mehr, wenn die
+  openWB beim Start nicht erreichbar ist.
+- **Kaputte/halbe `config.ini`** wird abgefangen (kein Sekundentakt-Crash);
+  `config.ini` wird atomar geschrieben (tmp + fsync + rename).
+- **Web-„Speichern" bewahrt** nun per SSH gepflegte Werte (`tls_enabled`, `timeout`,
+  `nominal_voltage`, MQTT-Passwort) durch Merge statt Überschreiben; DEFAULT-Keys
+  werden nicht mehr in andere Sektionen dupliziert.
+- **`/MaxCurrent`** löst keinen Ladebefehl mehr aus (nur lokales Limit);
+  `/SetCurrent` wird auf 6…Max A begrenzt.
+- `/Status` meldet zusätzlich **4 = „Warte auf Sonne"** bei PV-Laden.
+- Scan-Client-ID eindeutig (uuid).
+
+### Robustheit/Betrieb
+- **`status.json` im tmpfs** (`/run`) statt auf der eMMC → kein Flash-Verschleiß.
+- **`paho-mqtt` gebündelt** (`ext/paho-mqtt/`) → Installation ohne Internet/pip;
+  systemweites paho wird bevorzugt.
+- **SetupHelper**: `run`-Scripts pfad-unabhängig (behebt Crash-Loop bei Installation
+  nach `/data/<pkg>`); `setup` nutzt `installService`/`removeService` und sichert die
+  Reboot-Persistenz zusätzlich über einen `rc.local`-Eintrag; `install.sh` wartet
+  per `svok` auf supervise; `uninstall.sh` stoppt Log-Runner/multilog sauber.
+
+### Doku
+- Log-Pfade, Sitzungs-/SoC-/Status-Zuordnung, Mehrfach-Ladepunkt-Hinweis im UI,
+  Sicherheitsabschnitt, korrigierter Satz in den Voraussetzungen.
+
 ## [1.4.0] – 2026-08-28
 
 ### Neu

@@ -26,7 +26,17 @@ import configparser
 import subprocess
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-import paho.mqtt.client as mqtt
+import uuid
+
+HERE = os.path.dirname(os.path.realpath(__file__))
+
+# paho-mqtt: System bevorzugen, sonst die gebuendelte Kopie unter ext/ nutzen
+try:
+    import paho.mqtt.client as mqtt
+except ImportError:
+    import sys
+    sys.path.insert(1, os.path.join(HERE, "ext", "paho-mqtt"))
+    import paho.mqtt.client as mqtt
 
 
 def make_mqtt_client(client_id):
@@ -38,12 +48,25 @@ def make_mqtt_client(client_id):
         return mqtt.Client(client_id)
 
 
-HERE = os.path.dirname(os.path.realpath(__file__))
+def _status_dir():
+    """Muss mit dbus-openwb2.py uebereinstimmen: status.json liegt im tmpfs."""
+    for base in ("/run", "/var/volatile/run", "/var/volatile", "/tmp"):
+        if os.path.isdir(base):
+            d = os.path.join(base, "dbus-openwb2")
+            try:
+                os.makedirs(d, exist_ok=True)
+                return d
+            except OSError:
+                continue
+    return HERE
+
+
 CONFIG_FILE = os.path.join(HERE, "config.ini")
 SAMPLE_FILE = os.path.join(HERE, "config.sample.ini")
-STATUS_FILE = os.path.join(HERE, "status.json")
+STATUS_FILE = os.path.join(_status_dir(), "status.json")
 DRIVER_SERVICE = "dbus-openwb2"
-LOG_FILE = "/data/log/dbus-openwb2/current"
+LOG_FILE = "/var/log/dbus-openwb2/current"
+MAX_BODY = 256 * 1024  # 256 KiB Obergrenze fuer POST-Bodies
 
 DEFAULTS = {
     "DEFAULT": {"logging": "WARNING", "device_name": "openWB",
@@ -65,12 +88,19 @@ def read_config():
     cfg = configparser.ConfigParser()
     data = {sec: dict(vals) for sec, vals in DEFAULTS.items()}
     if os.path.exists(CONFIG_FILE):
-        cfg.read(CONFIG_FILE)
-        for sec in cfg.sections():
-            data.setdefault(sec, {})
-            data[sec].update(dict(cfg[sec]))
+        try:
+            cfg.read(CONFIG_FILE)
+        except configparser.Error:
+            # defekte config.ini: mit Defaults weiterarbeiten, damit das
+            # Web-Interface der Rettungsanker bleibt
+            return data
         if cfg.defaults():
             data["DEFAULT"].update(dict(cfg.defaults()))
+        # Nur die sektions-eigenen Optionen uebernehmen (nicht die aus [DEFAULT]
+        # geerbten), sonst dupliziert der Merge-Save die DEFAULT-Keys in jede Sektion.
+        for sec in cfg.sections():
+            data.setdefault(sec, {})
+            data[sec].update(dict(cfg._sections.get(sec, {})))
     return data
 
 
@@ -80,9 +110,19 @@ def write_config(data):
         cfg["DEFAULT"][key] = str(val)
     for sec in ("WALLBOX", "CONTROL", "WEB", "MQTT"):
         cfg[sec] = {k: str(v) for k, v in data.get(sec, {}).items()}
-    with open(CONFIG_FILE, "w") as fh:
+    # atomar schreiben: tmp + fsync + rename
+    tmp = CONFIG_FILE + ".tmp"
+    with open(tmp, "w") as fh:
         fh.write("; erzeugt vom dbus-openwb2 Web-Interface\n")
         cfg.write(fh)
+        fh.flush()
+        os.fsync(fh.fileno())
+    os.replace(tmp, CONFIG_FILE)
+    # Passwort-Hash + MQTT-Zugangsdaten nicht world-readable
+    try:
+        os.chmod(CONFIG_FILE, 0o600)
+    except OSError:
+        pass
 
 
 # --------------------------------------------------------------------------
@@ -140,7 +180,7 @@ def scan_openwb(broker, port, user, password, root, duration=4.0):
             d[sub] = payload
 
     try:
-        cli = make_mqtt_client("openwb2-webscan-%d" % int(time.time()))
+        cli = make_mqtt_client("openwb2-webscan-%s" % uuid.uuid4().hex[:8])
         cli.on_connect = _on_connect
         cli.on_message = _on_message
         if user and password:
@@ -257,9 +297,29 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     def _json_body(self):
-        length = int(self.headers.get("Content-Length", 0))
+        length = int(self.headers.get("Content-Length", 0) or 0)
+        if length < 0 or length > MAX_BODY:
+            raise ValueError("Request-Body zu gross")
         raw = self.rfile.read(length) if length else b"{}"
         return json.loads(raw or b"{}")
+
+    def _csrf_ok(self):
+        """Blockt Simple-Request-CSRF: verlangt JSON-Content-Type + eigenen
+        Header und prueft, falls vorhanden, Origin gegen Host."""
+        ctype = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+        if ctype != "application/json":
+            return False
+        if (self.headers.get("X-Requested-With") or "") != "dbus-openwb2":
+            return False
+        origin = self.headers.get("Origin")
+        if origin:
+            from urllib.parse import urlparse
+            try:
+                if urlparse(origin).netloc != (self.headers.get("Host") or ""):
+                    return False
+            except Exception:  # noqa: BLE001
+                return False
+        return True
 
     def _authorized(self):
         """True, wenn kein Schutz aktiv oder Basic-Auth stimmt. Sonst 401."""
@@ -287,7 +347,9 @@ class Handler(BaseHTTPRequestHandler):
         elif self.path == "/api/config":
             cfg = read_config()
             web = cfg.get("WEB", {})
-            web["protected"] = bool(web.pop("password_hash", ""))  # Hash nie ausliefern
+            web["protected"] = bool(web.pop("password_hash", ""))   # Hash nie ausliefern
+            mq = cfg.get("MQTT", {})
+            mq["password_set"] = bool(mq.pop("password", ""))       # MQTT-Passwort nie ausliefern
             self._send(200, json.dumps(cfg))
         elif self.path == "/api/status":
             self._send(200, json.dumps({"driver": driver_status()}))
@@ -301,17 +363,31 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         if not self._authorized():
             return
+        if not self._csrf_ok():
+            self._send(403, json.dumps({"error": "CSRF-Schutz: ungueltige Anfrage"}))
+            return
         try:
             if self.path == "/api/scan":
                 b = self._json_body()
+                cur_mqtt = read_config().get("MQTT", {})
+                user = b.get("username") or cur_mqtt.get("username", "")
+                pw = b.get("password") or cur_mqtt.get("password", "")
                 res = scan_openwb(b.get("broker_address"), b.get("broker_port", 1883),
-                                  b.get("username"), b.get("password"),
-                                  b.get("mqtt_root", "openWB"))
+                                  user, pw, b.get("mqtt_root", "openWB"))
                 self._send(200, json.dumps(res))
             elif self.path == "/api/save":
                 data = self._json_body()
-                # Passwort-Logik: Hash nur bei neuem Passwort setzen/aendern
-                cur_web = read_config().get("WEB", {})
+                cur = read_config()
+                # Merge: bestehende Config als Basis, nur gelieferte Felder ueberschreiben
+                # -> per SSH gepflegte Werte (tls_enabled, timeout, ...) bleiben erhalten
+                merged = {sec: dict(cur.get(sec, {}))
+                          for sec in ("DEFAULT", "WALLBOX", "CONTROL", "WEB", "MQTT")}
+                for sec in ("DEFAULT", "WALLBOX", "CONTROL", "MQTT"):
+                    for k, v in (data.get(sec) or {}).items():
+                        merged[sec][k] = v
+
+                # WEB: Passwort-Hash-Logik (nur bei neuem Passwort aendern)
+                cur_web = cur.get("WEB", {})
                 web_in = data.get("WEB", {})
                 if web_in.get("disable"):
                     new_hash = ""
@@ -319,12 +395,17 @@ class Handler(BaseHTTPRequestHandler):
                     new_hash = hash_pw(web_in["new_password"])
                 else:
                     new_hash = cur_web.get("password_hash", "")
-                data["WEB"] = {
-                    "port": cur_web.get("port", "8088"),
-                    "username": (web_in.get("username") or "admin").strip(),
-                    "password_hash": new_hash,
-                }
-                write_config(data)
+                merged["WEB"]["username"] = (web_in.get("username")
+                                             or cur_web.get("username") or "admin").strip()
+                merged["WEB"]["password_hash"] = new_hash
+                merged["WEB"].pop("protected", None)
+
+                # MQTT-Passwort: leeres Feld = unveraendert (wird nie ans UI geliefert)
+                if not (merged["MQTT"].get("password") or "").strip():
+                    merged["MQTT"]["password"] = cur.get("MQTT", {}).get("password", "")
+                merged["MQTT"].pop("password_set", None)
+
+                write_config(merged)
                 ok, msg = restart_driver()
                 if new_hash and not cur_web.get("password_hash"):
                     msg += " Passwortschutz aktiv – bitte Seite neu laden und anmelden."
@@ -523,7 +604,7 @@ PAGE = r"""<!doctype html>
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 3v4M6 3v4"/><rect x="4" y="7" width="16" height="14" rx="2"/><path d="M13 11l-3 4h4l-3 4"/></svg>
     </span>2 &middot; Ladepunkt &amp; Anzeige</h2>
     <div class="row">
-      <div><label>Ladepunkt-ID</label><input id="chargepoint_id" value="1"></div>
+      <div><label>Ladepunkt-ID (mehrere kommagetrennt: 1,2)</label><input id="chargepoint_id" value="1"></div>
       <div><label>Ger&auml;tename (in Venus)</label><input id="device_name" value="openWB"></div>
     </div>
     <div class="row">
@@ -604,8 +685,18 @@ PAGE = r"""<!doctype html>
 
 <script>
 const $ = id => document.getElementById(id);
+// HTML-Escape gegen XSS aus untrusted MQTT-Payloads / config-Werten
+function esc(s){ return String(s==null?"":s).replace(/[&<>"']/g,
+  c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+// POST mit JSON-Content-Type + eigenem Header (erzwingt CORS-Preflight -> CSRF-Schutz)
+async function postJSON(url, body){
+  const r = await fetch(url, {method:"POST",
+    headers:{"Content-Type":"application/json","X-Requested-With":"dbus-openwb2"},
+    body: JSON.stringify(body||{})});
+  return r.json();
+}
 const FIELDS = {
-  MQTT: ["broker_address","broker_port","mqtt_root","username","password"],
+  MQTT: ["broker_address","broker_port","mqtt_root","username"],
   WALLBOX: ["chargepoint_id","max_current","position"],
 };
 function msg(text, cls){ const m=$("msg"); m.textContent=text;
@@ -622,6 +713,10 @@ async function load(){
   $("control_enabled").checked=g("CONTROL","enabled","0")==="1";
   $("charge_template_id").value=g("CONTROL","charge_template_id","0");
   $("web_username").value=g("WEB","username","admin");
+  // MQTT-Passwort wird nie ausgeliefert -> nur Platzhalter, leer = unveraendert
+  $("password").value="";
+  $("password").placeholder = g("MQTT","password_set",false)
+    ? "•••••• (gesetzt · leer = unverändert)" : "";
   const prot=g("WEB","protected",false);
   $("secstate").textContent = prot
     ? "🔒 Passwortschutz ist aktiv."
@@ -631,19 +726,20 @@ async function load(){
   status();
 }
 function collect(){
+  // Nur Felder senden, die das UI wirklich steuert. Alles andere (tls_enabled,
+  // timeout, nominal_voltage, port, MQTT-Passwort) bleibt serverseitig erhalten.
   return {
     DEFAULT:{logging:$("logging").value, device_name:$("device_name").value,
-      device_instance:$("device_instance").value, timeout:"60"},
+      device_instance:$("device_instance").value},
     WALLBOX:{chargepoint_id:$("chargepoint_id").value,
-      max_current:$("max_current").value, position:$("position").value,
-      nominal_voltage:"230"},
+      max_current:$("max_current").value, position:$("position").value},
     CONTROL:{enabled:$("control_enabled").checked?"1":"0",
       charge_template_id:$("charge_template_id").value},
-    WEB:{port:"8088", username:$("web_username").value,
+    WEB:{username:$("web_username").value,
       new_password:$("web_new_password").value, disable:$("web_disable").checked},
     MQTT:{broker_address:$("broker_address").value, broker_port:$("broker_port").value,
       username:$("username").value, password:$("password").value,
-      tls_enabled:"0", mqtt_root:$("mqtt_root").value},
+      mqtt_root:$("mqtt_root").value},
   };
 }
 async function scan(){
@@ -652,37 +748,39 @@ async function scan(){
     broker_port:$("broker_port").value, username:$("username").value,
     password:$("password").value, mqtt_root:$("mqtt_root").value};
   try{
-    const r = await (await fetch("/api/scan",{method:"POST",
-      body:JSON.stringify(body)})).json();
+    const r = await postJSON("/api/scan", body);
     if(!r.ok){ msg("Scan fehlgeschlagen: "+(r.error||"?"),"m-err");
       $("scanresult").innerHTML=""; return; }
     const cps=r.chargepoints; const ids=Object.keys(cps).sort();
     let h="<p class='note'>Gefundene Ladepunkte (klicken zum &Uuml;bernehmen):</p>";
     for(const id of ids){ const d=cps[id];
       const plug=d.plug_state==="1"?"eingesteckt":"frei";
-      const chg=d.charge_state==="1"?"l&auml;dt":"steht";
-      const soc = (d.soc!==null&&d.soc!==undefined)?`${Math.round(d.soc)} %`:"kein SoC";
-      h+=`<div class="cp" onclick="pick('${id}','${d.charge_template_id}')">
-        <div><b>Ladepunkt ${id}</b><br><small>${d.power||0} W &middot; ${plug} &middot; ${chg}
-        &middot; Soll ${d.evse_current||0} A &middot; SoC: ${soc}</small></div>
-        <small>tpl ${d.charge_template_id ?? "?"}</small></div>`; }
+      const chg=d.charge_state==="1"?"lädt":"steht";
+      const soc = (d.soc!==null&&d.soc!==undefined)?`${Math.round(Number(d.soc)||0)} %`:"kein SoC";
+      const tpl = (d.charge_template_id!==null&&d.charge_template_id!==undefined)?d.charge_template_id:"";
+      const pw = Number(d.power)||0, cur = Number(d.evse_current)||0;
+      h+=`<div class="cp" data-id="${esc(id)}" data-tpl="${esc(tpl)}">
+        <div><b>Ladepunkt ${esc(id)}</b><br><small>${pw} W &middot; ${plug} &middot; ${chg}
+        &middot; Soll ${cur} A &middot; SoC: ${soc}</small></div>
+        <small>tpl ${esc(tpl||"?")}</small></div>`; }
     $("scanresult").innerHTML=h;
+    $("scanresult").querySelectorAll(".cp").forEach(el =>
+      el.addEventListener("click", () => pick(el.dataset.id, el.dataset.tpl, el)));
     msg("Scan ok: "+ids.length+" Ladepunkt(e) gefunden.","m-ok");
   }catch(e){ msg("Scan-Fehler: "+e,"m-err"); }
 }
-function pick(id,tpl){ $("chargepoint_id").value=id;
-  if(tpl && tpl!=="null" && tpl!=="undefined") $("charge_template_id").value=tpl;
+function pick(id,tpl,el){ $("chargepoint_id").value=id;
+  if(tpl && tpl!=="null" && tpl!=="undefined" && tpl!=="") $("charge_template_id").value=tpl;
   document.querySelectorAll(".cp").forEach(e=>e.classList.remove("sel"));
-  event.currentTarget.classList.add("sel");
-  msg("Ladepunkt "+id+" &uuml;bernommen.","m-info"); }
+  if(el) el.classList.add("sel");
+  msg("Ladepunkt "+id+" übernommen.","m-info"); }
 async function save(){
   msg("Speichere ...","m-info");
-  const r = await (await fetch("/api/save",{method:"POST",
-    body:JSON.stringify(collect())})).json();
+  const r = await postJSON("/api/save", collect());
   msg(r.message||"Gespeichert.", r.ok?"m-ok":"m-err"); setTimeout(status,1500);
 }
 async function restart(){
-  const r = await (await fetch("/api/restart",{method:"POST"})).json();
+  const r = await postJSON("/api/restart", {});
   msg(r.message, r.ok?"m-ok":"m-err"); setTimeout(status,1500);
 }
 async function status(){
@@ -700,16 +798,16 @@ async function pollLive(){
     if(d.stale) h+="<div class='stale'>⚠ Live-Daten veraltet – Treiber getrennt?</div>";
     for(const c of cps){
       const cls = c.charging?"p-charging":(c.plugged?"p-connected":"p-idle");
-      const soc = (c.soc!==null&&c.soc!==undefined)?`<div class="metric"><div class="v">${Math.round(c.soc)} %</div><div class="k">Fahrzeug-SoC</div></div>`:"";
-      const sess = (c.session_kwh!==null&&c.session_kwh!==undefined)?`<div class="metric"><div class="v">${c.session_kwh}</div><div class="k">kWh Sitzung</div></div>`:"";
+      const soc = (c.soc!==null&&c.soc!==undefined)?`<div class="metric"><div class="v">${Math.round(Number(c.soc)||0)} %</div><div class="k">Fahrzeug-SoC</div></div>`:"";
+      const sess = (c.session_kwh!==null&&c.session_kwh!==undefined)?`<div class="metric"><div class="v">${esc(c.session_kwh)}</div><div class="k">kWh Sitzung</div></div>`:"";
       h+=`<div class="lp">
-        <div class="lphead"><span class="lpname">${c.name} <small style="color:var(--muted)">· LP ${c.id}</small></span>
-          <span class="pill ${cls}">${c.status}</span></div>
+        <div class="lphead"><span class="lpname">${esc(c.name)} <small style="color:var(--muted)">· LP ${esc(c.id)}</small></span>
+          <span class="pill ${cls}">${esc(c.status)}</span></div>
         <div class="metrics">
-          <div class="metric"><div class="v">${fmt(c.power)} W</div><div class="k">Leistung</div></div>
-          <div class="metric"><div class="v">${fmt(c.set_current)} A</div><div class="k">Sollstrom</div></div>
-          <div class="metric"><div class="v">${fmt(c.phases)}</div><div class="k">Phasen</div></div>
-          <div class="metric"><div class="v">${fmt(c.energy_kwh)}</div><div class="k">kWh gesamt</div></div>
+          <div class="metric"><div class="v">${esc(fmt(c.power))} W</div><div class="k">Leistung</div></div>
+          <div class="metric"><div class="v">${esc(fmt(c.set_current))} A</div><div class="k">Sollstrom</div></div>
+          <div class="metric"><div class="v">${esc(fmt(c.phases))}</div><div class="k">Phasen</div></div>
+          <div class="metric"><div class="v">${esc(fmt(c.energy_kwh))}</div><div class="k">kWh gesamt</div></div>
           ${sess}${soc}
         </div></div>`;
     }

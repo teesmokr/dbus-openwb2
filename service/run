@@ -1,4 +1,7 @@
 #!/bin/sh
 echo "*** starting dbus-openwb2 ***"
 exec 2>&1
-exec /data/etc/dbus-openwb2/dbus-openwb2.py
+# Pfad relativ zum echten Ort des run-Scripts (folgt dem /service-Symlink),
+# damit sowohl /data/etc/dbus-openwb2 als auch SetupHelper (/data/dbus-openwb2) funktionieren.
+DIR=$(dirname "$(readlink -f "$0")")
+exec "$DIR/../dbus-openwb2.py"

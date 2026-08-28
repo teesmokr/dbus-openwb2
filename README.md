@@ -36,7 +36,7 @@ Die openWB erscheint als **EVCS-Kachel** neben Netz, Lasten, PV und Batterie
 
 ## Voraussetzungen
 
-- Venus-OS-Gerät (getestet gedacht für Cerbo GX) mit **root/SSH-Zugang**
+- Venus-OS-Gerät (entwickelt für und getestet auf dem Cerbo GX) mit **root/SSH-Zugang**
 - openWB **2.x** mit aktivem **MQTT-Broker** (Standard: Port 1883, Root-Topic `openWB`)
 
 ## Schnellinstallation (Endnutzer)
@@ -66,7 +66,7 @@ verwalten (Download, Update, automatische Neuinstallation nach Firmware-Updates)
 |------|------|
 | Package name | `dbus-openwb2` |
 | GitHub user   | `teesmokr` |
-| GitHub branch/tag | `main` (oder `v1.4.0`) |
+| GitHub branch/tag | `main` (oder `v1.5.0`) |
 
 Dann **Proceed / Install**. Das mitgelieferte [`setup`](setup)-Script installiert
 `paho-mqtt`, legt die `config.ini` an und verlinkt beide Dienste.
@@ -186,7 +186,9 @@ eintragen (nicht die der openWB).
 | `/NrOfPhases`           | `get/phases_in_use`                                 |
 | `/Ac/Frequency`         | `get/frequency`                                     |
 | `/Soc`                  | `get/connected_vehicle/soc` → `soc`                 |
-| `/Status`               | `get/plug_state` + `get/charge_state`               |
+| `/Session/Energy`       | `get/imported` − Stand beim Anstecken               |
+| `/Session/Time`         | Dauer seit Anstecken                                |
+| `/Status`               | `plug_state` + `charge_state` (+ `pv_charging` → „Warte auf Sonne") |
 | `/Mode`                 | `get/connected_vehicle/config` → `chargemode`       |
 
 ## Steuerung (Venus → openWB)
@@ -196,10 +198,11 @@ Nur aktiv, wenn im Web-Interface **„Steuerung erlauben"** gesetzt ist
 
 | Venus-Aktion       | openWB-2-Topic                                                                   |
 |--------------------|----------------------------------------------------------------------------------|
-| Start / Stop       | `set/vehicle/template/charge_template/<tpl>/chargemode/selected` = `instant_charging` / `stop` |
-| Ladestrom setzen   | `set/vehicle/template/charge_template/<tpl>/chargemode/instant_charging/current`  |
-| Modus              | `.../chargemode/selected` = `instant_charging` / `pv_charging` / `scheduled_charging` |
+| `/StartStop`       | `set/vehicle/template/charge_template/<tpl>/chargemode/selected` = `instant_charging` / `stop` |
+| `/SetCurrent`      | `set/vehicle/template/charge_template/<tpl>/chargemode/instant_charging/current` (auf 6…Max A begrenzt) |
+| `/Mode`            | `.../chargemode/selected` = `instant_charging` / `pv_charging` / `scheduled_charging` |
 
+`/MaxCurrent` ist nur ein **lokales Limit** und löst **keinen** openWB-Befehl aus.
 Die `charge_template`-ID (`<tpl>`) wird automatisch aus
 `get/connected_vehicle/config` erkannt (im Web-Interface auf `0` = auto lassen).
 
@@ -270,14 +273,18 @@ VRM-Widget verwenden.
 
 ```bash
 # Treiber-Log
-tail -f /data/log/dbus-openwb2/current | tai64nlocal
+tail -f /var/log/dbus-openwb2/current | tai64nlocal
 # Web-Log
-tail -f /data/log/dbus-openwb2-web/current | tai64nlocal
+tail -f /var/log/dbus-openwb2-web/current | tai64nlocal
 # Status
 svstat /service/dbus-openwb2 /service/dbus-openwb2-web
 # Neustart
 bash /data/etc/dbus-openwb2/restart.sh
 ```
+
+Der Log-Viewer im Web-Interface zeigt dasselbe Treiber-Log direkt im Browser.
+Die Logs liegen bewusst im tmpfs (`/var/log`), das schont bei Crash-Schleifen
+die eMMC.
 
 ## Deinstallation
 
@@ -285,12 +292,30 @@ bash /data/etc/dbus-openwb2/restart.sh
 bash /data/etc/dbus-openwb2/uninstall.sh
 ```
 
+## Sicherheit
+
+Das Web-Interface ist für das **lokale Heimnetz** gedacht:
+
+- Optionaler **Passwortschutz** (HTTP Basic Auth), Passwort nur als SHA-256-Hash
+  in der (auf `600` gesetzten) `config.ini`. Ohne gesetztes Passwort ist das
+  Interface im LAN offen – für ein reines Heimnetz üblich.
+- Schutz gegen **CSRF** (POST verlangt JSON-Content-Type + eigenen Header und
+  prüft die Origin) und gegen **XSS** (alle openWB-/Config-Werte werden escaped).
+- **Kein TLS**: Bei Basic Auth wird das Passwort im Klartext übertragen. Wer das
+  Interface über das Heimnetz hinaus erreichbar macht, sollte einen
+  Reverse-Proxy mit HTTPS davorsetzen und den Port nicht ins Internet öffnen.
+
 ## Hinweise / Haftung
 
 Privates Projekt, keine Gewähr. Die openWB-2-Set-Topics können sich je nach
 Version unterscheiden – die Steuerung ist bewusst standardmäßig **aus** und
 sollte nach dem ersten Livetest kontrolliert werden. Die VRM-Instanz (`53`)
 muss eindeutig sein; bei Konflikt eine andere Zahl wählen.
+
+`paho-mqtt` ist unter `ext/paho-mqtt/` **mitgeliefert** – die Installation
+funktioniert damit auch ohne Internet/pip. Ein systemweit installiertes
+paho-mqtt wird bevorzugt. `status.json` (Live-Daten) liegt im tmpfs (`/run`),
+um die eMMC zu schonen.
 
 ## Credits
 
