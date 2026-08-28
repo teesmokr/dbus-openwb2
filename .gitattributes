@@ -1,0 +1,11 @@
+# Erzwingt LF-Zeilenenden – zwingend für die daemontools run-Skripte und .sh,
+# auch wenn unter Windows ausgecheckt/bearbeitet wird.
+* text=auto eol=lf
+*.py    text eol=lf
+*.sh    text eol=lf
+*.ini   text eol=lf
+*.md    text eol=lf
+service/run       text eol=lf
+service/log/run   text eol=lf
+service-web/run   text eol=lf
+service-web/log/run text eol=lf

@@ -1,0 +1,11 @@
+# lokale Konfiguration (enthält evtl. Zugangsdaten) – nie committen
+config.ini
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Logs / Temp
+*.log
+*.tmp

@@ -1,0 +1,4 @@
+#!/bin/sh
+echo "*** starting dbus-openwb2-web ***"
+exec 2>&1
+exec /data/etc/dbus-openwb2/webconfig.py

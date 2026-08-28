@@ -1,0 +1,4 @@
+#!/bin/sh
+echo "*** starting dbus-openwb2 ***"
+exec 2>&1
+exec /data/etc/dbus-openwb2/dbus-openwb2.py
