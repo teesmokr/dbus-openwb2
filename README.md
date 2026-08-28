@@ -27,11 +27,11 @@ Inspiriert von [gvzdus/dbus-mqtt-openwb](https://github.com/gvzdus/dbus-mqtt-ope
 
 ## Schnellinstallation (Endnutzer)
 
-Per SSH auf dem Venus-OS-Gerät (`GITHUBUSER` durch den echten Namen ersetzen):
+Per SSH auf dem Venus-OS-Gerät (`teesmokr` durch den echten Namen ersetzen):
 
 ```bash
 cd /tmp
-wget -O dbus-openwb2.zip https://github.com/GITHUBUSER/dbus-openwb2/archive/refs/heads/main.zip
+wget -O dbus-openwb2.zip https://github.com/teesmokr/dbus-openwb2/archive/refs/heads/main.zip
 unzip -o dbus-openwb2.zip
 rm -rf /data/etc/dbus-openwb2
 cp -R dbus-openwb2-main /data/etc/dbus-openwb2
