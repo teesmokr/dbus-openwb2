@@ -245,6 +245,25 @@ Die Ladestation ist trotzdem überall vorhanden: in der **Geräteliste**
 (auch in der klassischen GUI unter *Settings → Device List*), in der **VRM-App**
 und in der neuen **gui-v2**-Oberfläche.
 
+## Fahrzeug-Ladestand (SoC)
+
+Der Treiber liest den SoC aus openWB und legt ihn als `/Soc` auf den D-Bus –
+im **Web-Interface** (Live-Status) wird er angezeigt.
+
+Die **Venus-EVCS-Kachel selbst zeigt keinen SoC an**: Victrons EVCS-Anzeige
+liest nur `/Session/Energy`, `/Status`, `/Mode` und `/Session/Time` – ein
+SoC-Feld gibt es dort nicht. Das ist eine Grenze der Victron-Oberfläche, kein
+Fehler des Treibers.
+
+Der Wert ist aber nutzbar – z. B. über die **Venus-MQTT-API**:
+
+```
+N/<vrm-id>/evcharger/<instanz>/Soc
+```
+
+Damit lässt er sich in **Node-RED**, **Home Assistant** oder einem eigenen
+VRM-Widget verwenden.
+
 ## Betrieb
 
 ```bash
