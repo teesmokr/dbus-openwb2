@@ -20,7 +20,6 @@ import os
 import json
 import time
 import configparser
-import threading
 import subprocess
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 

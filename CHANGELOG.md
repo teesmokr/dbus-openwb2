@@ -1,5 +1,22 @@
 # Changelog
 
+## [1.2.0] – 2026-08-28
+
+### Neu
+- **Mehrere Ladepunkte**: `chargepoint_id` akzeptiert eine Liste (`1,2`),
+  je Ladepunkt entsteht ein eigener `evcharger`-Service (fortlaufende Instanz).
+- **Fahrzeug-Ladestand (SoC)** auf `/Soc` und **`/Ac/Frequency`** neu.
+- **Live-Status im Web-Interface**: Leistung, Sollstrom, Phasen, kWh und SoC
+  je Ladepunkt mit Status-Pill, Auto-Refresh (`/api/live`, Treiber-`status.json`).
+- **Log-Viewer im Web-Interface** (`/api/log`, `tail` + `tai64nlocal`).
+- **SetupHelper-Kompatibilität** (Beta): `setup`-Script + `version` für den
+  Package Manager von Kevin Windrem.
+- **GitHub Actions CI** (py_compile, pyflakes, bash -n, ShellCheck),
+  Issue-/PR-Templates, `CONTRIBUTING.md`, VRM-Screenshot in der README.
+
+### Intern
+- Treiber um eine `ChargePoint`-Klasse refaktoriert (sauberes Multi-Instanz-Handling).
+
 ## [1.1.0] – 2026-08-28
 
 ### Neu / Verbessert

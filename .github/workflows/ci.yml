@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install linters
+        run: pip install pyflakes
+
+      - name: Python syntax check
+        run: python -m py_compile dbus-openwb2.py webconfig.py
+
+      - name: Pyflakes
+        run: python -m pyflakes dbus-openwb2.py webconfig.py
+
+      - name: Shell syntax check
+        run: |
+          for f in install.sh uninstall.sh restart.sh setup; do
+            bash -n "$f"
+          done
+
+      - name: ShellCheck (errors only)
+        run: |
+          sudo apt-get update && sudo apt-get install -y shellcheck
+          shellcheck --severity=error install.sh uninstall.sh restart.sh setup

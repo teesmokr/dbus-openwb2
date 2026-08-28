@@ -14,13 +14,24 @@ Inspiriert von [gvzdus/dbus-mqtt-openwb](https://github.com/gvzdus/dbus-mqtt-ope
 ## Was es kann
 
 - **Anzeige** der openWB in Venus-GUI und VRM: Leistung (gesamt + pro Phase),
-  Energie, Ladestrom, Status (getrennt/verbunden/lädt), Phasenzahl.
+  Energie, Ladestrom, Frequenz, Status (getrennt/verbunden/lädt), Phasenzahl
+  und **Fahrzeug-Ladestand (SoC)**.
+- **Mehrere Ladepunkte**: je openWB-Ladepunkt ein eigener Venus-Ladestation-Service.
 - **Web-Interface** unter `http://<venus-ip>:8088`:
+  - **Live-Status** (Leistung, Sollstrom, Phasen, kWh, SoC) mit Auto-Refresh
+  - **Log-Viewer** – Treiber-Log im Browser, ohne SSH
   - openWB live **scannen** → erkennt Ladepunkte und Live-Werte automatisch
-  - Broker, Ladepunkt-ID, Name, VRM-Instanz, Max-Strom, Position einstellen
+  - Broker, Ladepunkt-ID(s), Name, VRM-Instanz, Max-Strom, Position einstellen
   - **Speichern** schreibt `config.ini` und startet den Treiber neu
 - **Steuerung (optional, abschaltbar)**: Start/Stop, Ladestrom und Lademodus
   aus Venus OS zurück in die openWB (Modus *Sofortladen* / *Stop* / *PV*).
+
+### So sieht es in Venus OS / VRM aus
+
+<img src="docs/vrm-dashboard.jpg" alt="openWB als EVCS-Kachel in der VRM-App" width="360">
+
+Die openWB erscheint als **EVCS-Kachel** neben Netz, Lasten, PV und Batterie
+(hier mit 727 kWh Gesamtenergie).
 
 ## Voraussetzungen
 
@@ -140,6 +151,8 @@ eintragen (nicht die der openWB).
 | `/Current`              | `get/currents` (Maximum)                            |
 | `/SetCurrent`           | `get/evse_current`                                  |
 | `/NrOfPhases`           | `get/phases_in_use`                                 |
+| `/Ac/Frequency`         | `get/frequency`                                     |
+| `/Soc`                  | `get/connected_vehicle/soc` → `soc`                 |
 | `/Status`               | `get/plug_state` + `get/charge_state`               |
 | `/Mode`                 | `get/connected_vehicle/config` → `chargemode`       |
 
@@ -213,4 +226,4 @@ muss eindeutig sein; bei Konflikt eine andere Zahl wählen.
 ## Beitragen
 
 Pull Requests willkommen – insbesondere getestete openWB-2-Set-Topics für die
-Steuerung über verschiedene openWB-Versionen hinweg.
+Steuerung über verschiedene openWB-Versionen hinweg. Siehe [CONTRIBUTING.md](CONTRIBUTING.md).
