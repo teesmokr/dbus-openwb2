@@ -136,6 +136,26 @@ Nur aktiv, wenn im Web-Interface **„Steuerung erlauben"** gesetzt ist
 Die `charge_template`-ID (`<tpl>`) wird automatisch aus
 `get/connected_vehicle/config` erkannt (im Web-Interface auf `0` = auto lassen).
 
+## Name der Ladestation (EVCS-Kachel)
+
+Der Gerätename wird im Web-Interface unter **„Gerätename"** gesetzt
+(`[DEFAULT] device_name`) und landet auf dem D-Bus als `/CustomName`.
+
+Wichtig zu wissen: Auf der **Übersichts-Kachel** (Dashboard/„Zuhause") zeigt
+Victrons GUI **fest den Text „EVCS"** an – dieser Titel ist in `gui-v2`
+hardcodiert (`components/widgets/EvcsWidget.qml`) und lässt sich vom Treiber aus
+**nicht** ändern; das gilt für jede Ladestation, auch Victrons eigene.
+
+Der konfigurierte Name (z. B. `openWB`) erscheint dafür an allen Stellen, die
+`device.name` verwenden:
+
+- in der **EVCS-Steuerkarte** (Kachel antippen)
+- in **Einstellungen → Geräteliste**
+- auf der **Gerätedetailseite**
+
+Dort kann der Name auch direkt in der GX-Oberfläche geändert werden
+(**Geräteliste → Ladestation → Name**); Venus speichert das dauerhaft.
+
 ## Betrieb
 
 ```bash
