@@ -225,11 +225,15 @@ Dort kann der Name auch direkt in der GX-Oberfläche geändert werden
 
 Venus OS hat zwei Oberflächen – das ist wichtig, um Verwirrung zu vermeiden:
 
-| Oberfläche | Zeigt die openWB im Übersichts-Flow? |
-|------------|--------------------------------------|
-| **VRM-App / VRM-Portal** (nutzt *gui-v2*) | **Ja**, als EVCS-Kachel |
-| **Neue lokale UI** (*gui-v2*, im Browser `http://<venus-ip>/`) | **Ja** |
+| Oberfläche | Zeigt die openWB als EVCS-Kachel? |
+|------------|-----------------------------------|
+| **VRM-App / VRM-Portal** → Übersicht (*gui-v2*) | **Ja** |
+| **Neue lokale UI** (*gui-v2*, Browser `http://<venus-ip>/`) → **Übersicht** | **Ja** |
+| Neue UI → **Kurzansicht** (Brief-Seite) | **Nein** – nur Batterie + Solar/Netz/Lasten |
 | **Klassische Remote Console** (*gui-v1*) | **Nein** – zeigt nur Netz/PV/Lasten/Batterie |
+
+> In der neuen UI (gui-v2) unten auf **„Übersicht"** tippen – die EVCS-Kachel
+> liegt auf der Übersichts-Seite, **nicht** auf der „Kurzansicht".
 
 Dass die **klassische Remote-Console-Übersicht keine EV-Ladestationen** im
 Flussdiagramm darstellt, ist eine
