@@ -9,3 +9,10 @@ service/run       text eol=lf
 service/log/run   text eol=lf
 service-web/run   text eol=lf
 service-web/log/run text eol=lf
+
+# Binärdateien nie anfassen
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.zip binary

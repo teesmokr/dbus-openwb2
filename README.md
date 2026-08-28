@@ -7,6 +7,8 @@ Web-Interface** zur Konfiguration und **optionaler Steuerung** aus Venus OS.
 Inspiriert von [gvzdus/dbus-mqtt-openwb](https://github.com/gvzdus/dbus-mqtt-openwb)
 (nur openWB 1.9), neu geschrieben für die openWB-2-Topic-Struktur.
 
+![dbus-openwb2 Web-Interface](docs/web-interface.png)
+
 ---
 
 ## Was es kann
@@ -27,7 +29,7 @@ Inspiriert von [gvzdus/dbus-mqtt-openwb](https://github.com/gvzdus/dbus-mqtt-ope
 
 ## Schnellinstallation (Endnutzer)
 
-Per SSH auf dem Venus-OS-Gerät (`teesmokr` durch den echten Namen ersetzen):
+Per SSH auf dem Venus-OS-Gerät:
 
 ```bash
 cd /tmp
@@ -55,6 +57,56 @@ Firmware-Updates).
 
 Danach im Browser: **`http://<venus-ip>:8088`** öffnen, openWB scannen,
 Ladepunkt übernehmen, speichern. Fertig – die Wallbox erscheint in der Geräteliste.
+
+## openWB vorbereiten (MQTT)
+
+Der Treiber liest die Daten über MQTT. Es gibt zwei Wege – **Variante A ist der
+Normalfall und braucht keine openWB-Einstellung.**
+
+### Variante A – direkt mit dem openWB-Broker verbinden (empfohlen)
+
+openWB 2.x betreibt intern einen MQTT-Broker, der im Heimnetz auf **Port 1883**
+erreichbar ist. Es ist **keine Konfiguration an der openWB nötig** – einfach im
+Web-Interface eintragen:
+
+| Feld            | Wert                          |
+|-----------------|-------------------------------|
+| openWB IP       | IP der openWB (z. B. `192.168.1.50`) |
+| MQTT-Port       | `1883`                        |
+| Root-Topic      | `openWB`                      |
+| Benutzer/Passwort | leer                        |
+
+Dann **„openWB scannen"** klicken – die Ladepunkte erscheinen automatisch.
+
+### Variante B – MQTT-Brücke (nur wenn A nicht geht)
+
+Falls Port 1883 der openWB nicht erreichbar ist oder du die Daten bewusst an
+einen **anderen** Broker (z. B. einen eigenen Mosquitto oder den auf dem Cerbo)
+weiterleiten willst, richtest du in der openWB eine **MQTT-Brücke** ein:
+
+**openWB-Menü:** `System → MQTT-Brücken → „+" (Neue Brücke)`
+
+| Feld in der openWB      | Wert                                              |
+|-------------------------|---------------------------------------------------|
+| Bezeichnung             | z. B. `Venus`                                     |
+| Brücke aktivieren       | **Ja**                                            |
+| Entfernter Server       | IP des Ziel-Brokers (z. B. Cerbo/Mosquitto)       |
+| Entfernter Port         | Port des Ziel-Brokers (Standard `1883`)           |
+| Benutzername / Passwort | Login des Ziel-Brokers (falls gesetzt)            |
+| Präfix                  | `openWB/`                                         |
+| Client ID               | z. B. `openWB`                                     |
+| MQTT Protokoll          | `v3.1.1`                                           |
+| **Alle Statusdaten**    | **An**  ← wichtig, sonst kommen keine Ladepunkt-Werte |
+| Datenserien für Diagramme | Aus (optional)                                  |
+| Fernkonfiguration ermöglichen | nur **An**, wenn die Steuerung (Variante mit Set-Topics) über diesen Broker laufen soll |
+
+Danach im Web-Interface als **openWB IP** die Adresse dieses **Ziel-Brokers**
+eintragen (nicht die der openWB).
+
+> ⚠️ Die openWB warnt zu Recht: Eine Brücke gibt alle weitergeleiteten Daten an
+> jeden frei, der Zugriff auf den Ziel-Broker hat. Für Brücken zu externen
+> Servern TLS + Login verwenden. Im rein lokalen Heimnetz (openWB → Cerbo) ist
+> das meist unkritisch.
 
 ## Datenzuordnung (openWB 2.x → Venus)
 
