@@ -42,6 +42,27 @@ bash /data/etc/dbus-openwb2/install.sh
 
 Danach **`http://<venus-ip>:8088`** im Browser öffnen und konfigurieren.
 
+## Installation via SetupHelper (Beta)
+
+Wenn du den [SetupHelper](https://github.com/kwindrem/SetupHelper) von Kevin
+Windrem installiert hast, kannst du `dbus-openwb2` über den **Package Manager**
+verwalten (Download, Update, automatische Neuinstallation nach Firmware-Updates):
+
+**GX-GUI → Settings → Package manager → Inactive packages → new** und eintragen:
+
+| Feld | Wert |
+|------|------|
+| Package name | `dbus-openwb2` |
+| GitHub user   | `teesmokr` |
+| GitHub branch/tag | `main` (oder `v1.2.0`) |
+
+Dann **Proceed / Install**. Das mitgelieferte [`setup`](setup)-Script installiert
+`paho-mqtt`, legt die `config.ini` an und verlinkt beide Dienste.
+
+> Beta: Die SetupHelper-Integration ist noch nicht auf Hardware getestet.
+> Rückmeldungen willkommen. Ohne SetupHelper einfach die Schnellinstallation
+> oder `install.sh` nutzen.
+
 ## Installation (manuell)
 
 ```bash

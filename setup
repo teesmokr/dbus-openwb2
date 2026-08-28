@@ -1,0 +1,85 @@
+#!/bin/bash
+# setup  --  SetupHelper-kompatibler Installer fuer dbus-openwb2
+#
+# Ermoeglicht Installation/Update/Deinstallation ueber den "Package Manager"
+# des SetupHelper von Kevin Windrem (https://github.com/kwindrem/SetupHelper).
+# SetupHelper uebernimmt Download, Versionierung und die automatische
+# Neuinstallation nach Venus-OS-Firmware-Updates.
+#
+# Manuelle Installation ohne SetupHelper: stattdessen ./install.sh verwenden.
+#
+# Hinweis: Gegen die SetupHelper-HelperResources-API entwickelt; je nach
+# SetupHelper-Version koennen kleine Anpassungen noetig sein. Beta.
+
+pkgDir="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd )"
+pkgName=$( basename "$pkgDir" )
+
+# SetupHelper einbinden -------------------------------------------------------
+source "/data/SetupHelper/HelperResources/IncludeHelpers" 2>/dev/null
+if [ $? -ne 0 ]; then
+    echo
+    echo "FEHLER: SetupHelper wurde nicht gefunden."
+    echo "Dieses setup-Script benoetigt den SetupHelper von Kevin Windrem."
+    echo "Ohne SetupHelper bitte  ./install.sh  verwenden."
+    echo
+    exit 1
+fi
+
+# Bei manuellem Aufruf: Aktion abfragen
+if [ $scriptAction == 'NONE' ] ; then
+    standardActionPrompt
+fi
+
+link_services()
+{
+    ln -sfn "$pkgDir/service"     "/service/dbus-openwb2"
+    ln -sfn "$pkgDir/service-web" "/service/dbus-openwb2-web"
+}
+
+normalize_and_perms()
+{
+    for f in dbus-openwb2.py webconfig.py \
+             service/run service/log/run service-web/run service-web/log/run \
+             install.sh uninstall.sh restart.sh ; do
+        if [ -f "$pkgDir/$f" ]; then
+            sed -i 's/\r$//' "$pkgDir/$f"
+            chmod 755 "$pkgDir/$f"
+        fi
+    done
+}
+
+#### INSTALL -----------------------------------------------------------------
+if [ $scriptAction == 'INSTALL' ] ; then
+    logMessage "dbus-openwb2: Installation"
+
+    # Abhaengigkeit paho-mqtt
+    if ! python3 -c "import paho.mqtt.client" 2>/dev/null ; then
+        python3 -m pip install paho-mqtt \
+            || { opkg update && opkg install python3-pip && python3 -m pip install paho-mqtt; }
+    fi
+
+    # config.ini aus Vorlage anlegen (nur beim ersten Mal)
+    if [ ! -f "$pkgDir/config.ini" ]; then
+        cp "$pkgDir/config.sample.ini" "$pkgDir/config.ini"
+        logMessage "config.ini aus Vorlage erstellt - im Web-Interface konfigurieren."
+    fi
+
+    normalize_and_perms
+    link_services
+
+    # neue Ladestation soll sofort erscheinen
+    restartGui=true
+
+    endScript
+fi
+
+#### UNINSTALL ---------------------------------------------------------------
+if [ $scriptAction == 'UNINSTALL' ] ; then
+    logMessage "dbus-openwb2: Deinstallation"
+    rm -f /service/dbus-openwb2 /service/dbus-openwb2-web
+    kill $(pgrep -f "supervise dbus-openwb2") 2>/dev/null
+    kill $(pgrep -f "dbus-openwb2.py") 2>/dev/null
+    kill $(pgrep -f "webconfig.py") 2>/dev/null
+    restartGui=true
+    endScript
+fi
