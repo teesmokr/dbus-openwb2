@@ -166,7 +166,7 @@ class ChargePoint:
         sn = "com.victronenergy.evcharger.openwb2_%d" % self.instance
         svc = VeDbusService(sn)
         svc.add_path("/Mgmt/ProcessName", __file__)
-        svc.add_path("/Mgmt/ProcessVersion", "1.2 auf Python " + platform.python_version())
+        svc.add_path("/Mgmt/ProcessVersion", "1.3.1 auf Python " + platform.python_version())
         svc.add_path("/Mgmt/Connection", "MQTT openWB2 %s:%d" % (BROKER_ADDR, BROKER_PORT))
         svc.add_path("/DeviceInstance", self.instance)
         svc.add_path("/ProductId", 0xC024)
@@ -277,13 +277,24 @@ class ChargePoint:
                 self.svc["/Mode"] = CHARGEMODE_TO_MODE.get(mode, 0)
 
     def _t_soc(self, p):
+        # openWB sendet je nach Version JSON ({"soc": 42, ...}) oder eine Zahl
+        txt = p.decode("utf-8", "ignore").strip()
+        val = None
         try:
-            cfg = json.loads(p)
-            if isinstance(cfg, dict) and cfg.get("soc") is not None:
-                self.soc = float(cfg["soc"])
-                self.svc["/Soc"] = round(self.soc, 0)
+            j = json.loads(txt)
+            if isinstance(j, dict):
+                val = j.get("soc")
+            elif isinstance(j, (int, float)):
+                val = j
         except (ValueError, TypeError):
-            pass
+            try:
+                val = float(txt)
+            except ValueError:
+                val = None
+        if val is not None:
+            self.soc = float(val)
+            self.svc["/Soc"] = round(self.soc, 0)
+            log.debug("LP%d SoC=%s", self.id, self.soc)
 
     def _phase_powers(self):
         pw = self.powers if (self.powers and len(self.powers) >= 3) \

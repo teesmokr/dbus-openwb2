@@ -32,6 +32,12 @@ fi
 ln -sfn "$SCRIPT_DIR/service"     /service/dbus-openwb2
 ln -sfn "$SCRIPT_DIR/service-web" /service/dbus-openwb2-web
 
+# Dienste neu starten, damit bei einem UPDATE die neuen Dateien sofort greifen
+# (daemontools kurz Zeit geben, den Symlink zu erkennen)
+sleep 3
+svc -t /service/dbus-openwb2     2>/dev/null || true
+svc -t /service/dbus-openwb2-web 2>/dev/null || true
+
 # In rc.local eintragen, damit die Installation ein Firmware-Update ueberlebt
 RC=/data/rc.local
 if [ ! -f "$RC" ]; then

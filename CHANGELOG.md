@@ -1,5 +1,25 @@
 # Changelog
 
+## [1.3.1] – 2026-08-28
+
+### Behoben
+- **Update greift jetzt sofort**: `install.sh` und das SetupHelper-`setup`
+  starten nach einem Update **beide Dienste neu** (Treiber *und*
+  Web-Interface). Vorher lief das Web-Interface nach einem Update noch mit der
+  alten Version weiter (fehlende neue Karten wie „Sicherheit").
+- **Kein veralteter Browser-Cache** mehr: Das Web-Interface sendet
+  `Cache-Control: no-store`.
+
+### Verbessert
+- **SoC robuster**: akzeptiert JSON (`{"soc": …}`) *und* nackte Zahl; Debug-Log
+  bei Empfang.
+- **openWB-Scan** zeigt jetzt pro Ladepunkt den **SoC** (oder „kein SoC") – so
+  ist sofort sichtbar, ob die openWB überhaupt einen Ladestand liefert.
+
+> Hinweis bei SoC-Problemen: Die openWB sendet nur dann einen Fahrzeug-Ladestand,
+> wenn für das Fahrzeug ein **SoC-Modul** konfiguriert ist. Ohne SoC-Quelle in
+> der openWB bleibt der Wert leer.
+
 ## [1.3.0] – 2026-08-28
 
 ### Neu

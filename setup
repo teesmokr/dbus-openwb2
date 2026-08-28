@@ -67,6 +67,11 @@ if [ $scriptAction == 'INSTALL' ] ; then
     normalize_and_perms
     link_services
 
+    # Dienste neu starten, damit bei einem Update die neuen Dateien greifen
+    sleep 3
+    svc -t /service/dbus-openwb2     2>/dev/null || true
+    svc -t /service/dbus-openwb2-web 2>/dev/null || true
+
     # neue Ladestation soll sofort erscheinen
     restartGui=true
 

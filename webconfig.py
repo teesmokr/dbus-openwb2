@@ -135,7 +135,8 @@ def scan_openwb(broker, port, user, password, root, duration=4.0):
         d = found.setdefault(cp, {})
         if sub in ("get/power", "get/imported", "get/plug_state",
                    "get/charge_state", "get/evse_current", "get/phases_in_use",
-                   "get/currents", "get/connected_vehicle/config"):
+                   "get/currents", "get/connected_vehicle/config",
+                   "get/connected_vehicle/soc"):
             d[sub] = payload
 
     try:
@@ -161,6 +162,17 @@ def scan_openwb(broker, port, user, password, root, duration=4.0):
                 tpl = json.loads(cfg_raw).get("charge_template")
             except (ValueError, TypeError):
                 pass
+        soc = None
+        soc_raw = d.get("get/connected_vehicle/soc")
+        if soc_raw:
+            try:
+                j = json.loads(soc_raw)
+                soc = j.get("soc") if isinstance(j, dict) else j
+            except (ValueError, TypeError):
+                try:
+                    soc = float(soc_raw)
+                except ValueError:
+                    soc = None
         result["chargepoints"][cp] = {
             "power": d.get("get/power"),
             "imported": d.get("get/imported"),
@@ -169,6 +181,7 @@ def scan_openwb(broker, port, user, password, root, duration=4.0):
             "evse_current": d.get("get/evse_current"),
             "phases_in_use": d.get("get/phases_in_use"),
             "charge_template_id": tpl,
+            "soc": soc,
         }
     result["ok"] = result["error"] is None
     if result["ok"] and not result["chargepoints"]:
@@ -239,6 +252,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "no-store, must-revalidate")
         self.end_headers()
         self.wfile.write(data)
 
@@ -647,9 +661,10 @@ async function scan(){
     for(const id of ids){ const d=cps[id];
       const plug=d.plug_state==="1"?"eingesteckt":"frei";
       const chg=d.charge_state==="1"?"l&auml;dt":"steht";
+      const soc = (d.soc!==null&&d.soc!==undefined)?`${Math.round(d.soc)} %`:"kein SoC";
       h+=`<div class="cp" onclick="pick('${id}','${d.charge_template_id}')">
         <div><b>Ladepunkt ${id}</b><br><small>${d.power||0} W &middot; ${plug} &middot; ${chg}
-        &middot; Soll ${d.evse_current||0} A</small></div>
+        &middot; Soll ${d.evse_current||0} A &middot; SoC: ${soc}</small></div>
         <small>tpl ${d.charge_template_id ?? "?"}</small></div>`; }
     $("scanresult").innerHTML=h;
     msg("Scan ok: "+ids.length+" Ladepunkt(e) gefunden.","m-ok");
