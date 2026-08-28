@@ -221,6 +221,26 @@ Der konfigurierte Name (z. B. `openWB`) erscheint dafür an allen Stellen, die
 Dort kann der Name auch direkt in der GX-Oberfläche geändert werden
 (**Geräteliste → Ladestation → Name**); Venus speichert das dauerhaft.
 
+## Wo wird die Ladestation angezeigt?
+
+Venus OS hat zwei Oberflächen – das ist wichtig, um Verwirrung zu vermeiden:
+
+| Oberfläche | Zeigt die openWB im Übersichts-Flow? |
+|------------|--------------------------------------|
+| **VRM-App / VRM-Portal** (nutzt *gui-v2*) | **Ja**, als EVCS-Kachel |
+| **Neue lokale UI** (*gui-v2*, im Browser `http://<venus-ip>/`) | **Ja** |
+| **Klassische Remote Console** (*gui-v1*) | **Nein** – zeigt nur Netz/PV/Lasten/Batterie |
+
+Dass die **klassische Remote-Console-Übersicht keine EV-Ladestationen** im
+Flussdiagramm darstellt, ist eine
+[bestätigte Einschränkung von Victron](https://www.victronenergy.com/blog/2022/09/13/venus-os-v2-90-generator-controls-in-vrm-remote-ve-can-rv-c-venus-os-large-and-more/)
+(„the local remote console does not show EV chargers"), **kein Fehler dieses
+Treibers**.
+
+Die Ladestation ist trotzdem überall vorhanden: in der **Geräteliste**
+(auch in der klassischen GUI unter *Settings → Device List*), in der **VRM-App**
+und in der neuen **gui-v2**-Oberfläche.
+
 ## Betrieb
 
 ```bash
