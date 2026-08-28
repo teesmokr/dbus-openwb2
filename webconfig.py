@@ -19,6 +19,9 @@ Alle Grafiken sind eingebettetes SVG -> keine externen Requests (offline-faehig)
 import os
 import json
 import time
+import hmac
+import base64
+import hashlib
 import configparser
 import subprocess
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -48,7 +51,7 @@ DEFAULTS = {
     "WALLBOX": {"chargepoint_id": "1", "max_current": "16",
                 "position": "1", "nominal_voltage": "230"},
     "CONTROL": {"enabled": "0", "charge_template_id": "0"},
-    "WEB":     {"port": "8088"},
+    "WEB":     {"port": "8088", "username": "admin", "password_hash": ""},
     "MQTT":    {"broker_address": "IP_ADDR_OR_FQDN", "broker_port": "1883",
                 "username": "", "password": "", "tls_enabled": "0",
                 "mqtt_root": "openWB"},
@@ -80,6 +83,27 @@ def write_config(data):
     with open(CONFIG_FILE, "w") as fh:
         fh.write("; erzeugt vom dbus-openwb2 Web-Interface\n")
         cfg.write(fh)
+
+
+# --------------------------------------------------------------------------
+# Passwortschutz (optional, HTTP Basic Auth)
+# --------------------------------------------------------------------------
+def hash_pw(plain):
+    return hashlib.sha256(plain.encode("utf-8")).hexdigest()
+
+
+def auth_settings():
+    web = read_config().get("WEB", {})
+    return web.get("username", "admin"), web.get("password_hash", "")
+
+
+def check_credentials(user, pw):
+    cfg_user, cfg_hash = auth_settings()
+    if not cfg_hash:
+        return True  # Schutz nicht aktiv
+    ok_user = hmac.compare_digest(user or "", cfg_user or "")
+    ok_pw = hmac.compare_digest(hash_pw(pw or ""), cfg_hash)
+    return ok_user and ok_pw
 
 
 # --------------------------------------------------------------------------
@@ -223,11 +247,34 @@ class Handler(BaseHTTPRequestHandler):
         raw = self.rfile.read(length) if length else b"{}"
         return json.loads(raw or b"{}")
 
+    def _authorized(self):
+        """True, wenn kein Schutz aktiv oder Basic-Auth stimmt. Sonst 401."""
+        auth = self.headers.get("Authorization", "")
+        user = pw = ""
+        if auth.startswith("Basic "):
+            try:
+                user, _, pw = base64.b64decode(auth[6:]).decode("utf-8").partition(":")
+            except Exception:  # noqa: BLE001
+                user = pw = ""
+        if check_credentials(user, pw):
+            return True
+        self.send_response(401)
+        self.send_header("WWW-Authenticate", 'Basic realm="dbus-openwb2"')
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(b'{"error":"Anmeldung erforderlich"}')
+        return False
+
     def do_GET(self):
+        if not self._authorized():
+            return
         if self.path in ("/", "/index.html"):
             self._send(200, PAGE, "text/html; charset=utf-8")
         elif self.path == "/api/config":
-            self._send(200, json.dumps(read_config()))
+            cfg = read_config()
+            web = cfg.get("WEB", {})
+            web["protected"] = bool(web.pop("password_hash", ""))  # Hash nie ausliefern
+            self._send(200, json.dumps(cfg))
         elif self.path == "/api/status":
             self._send(200, json.dumps({"driver": driver_status()}))
         elif self.path == "/api/live":
@@ -238,6 +285,8 @@ class Handler(BaseHTTPRequestHandler):
             self._send(404, json.dumps({"error": "not found"}))
 
     def do_POST(self):
+        if not self._authorized():
+            return
         try:
             if self.path == "/api/scan":
                 b = self._json_body()
@@ -247,8 +296,24 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, json.dumps(res))
             elif self.path == "/api/save":
                 data = self._json_body()
+                # Passwort-Logik: Hash nur bei neuem Passwort setzen/aendern
+                cur_web = read_config().get("WEB", {})
+                web_in = data.get("WEB", {})
+                if web_in.get("disable"):
+                    new_hash = ""
+                elif web_in.get("new_password"):
+                    new_hash = hash_pw(web_in["new_password"])
+                else:
+                    new_hash = cur_web.get("password_hash", "")
+                data["WEB"] = {
+                    "port": cur_web.get("port", "8088"),
+                    "username": (web_in.get("username") or "admin").strip(),
+                    "password_hash": new_hash,
+                }
                 write_config(data)
                 ok, msg = restart_driver()
+                if new_hash and not cur_web.get("password_hash"):
+                    msg += " Passwortschutz aktiv – bitte Seite neu laden und anmelden."
                 self._send(200, json.dumps({"ok": ok, "message": msg}))
             elif self.path == "/api/restart":
                 ok, msg = restart_driver()
@@ -480,6 +545,26 @@ PAGE = r"""<!doctype html>
     </div>
   </div>
 
+  <div class="card">
+    <h2><span class="ico b">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+    </span>4 &middot; Sicherheit (Web-Zugang)</h2>
+    <p class="hint" id="secstate">&nbsp;</p>
+    <div class="row">
+      <div><label>Benutzername</label><input id="web_username" value="admin"></div>
+      <div><label>Neues Passwort (leer = unver&auml;ndert)</label>
+        <input id="web_new_password" type="password" placeholder="&bull;&bull;&bull;&bull;&bull;&bull;"></div>
+    </div>
+    <div class="switch">
+      <input type="checkbox" id="web_disable">
+      <label for="web_disable">Passwortschutz deaktivieren</label>
+    </div>
+    <p class="note">Sch&uuml;tzt dieses Web-Interface per Login (HTTP Basic Auth).
+      Das Passwort wird nur als SHA-256-Hash gespeichert.
+      Passwort vergessen? Per SSH in <code>config.ini</code> unter
+      <code>[WEB] password_hash</code> leeren.</p>
+  </div>
+
   <div class="bar">
     <button class="primary" onclick="save()">&#128190;&nbsp; Speichern &amp; Treiber neu starten</button>
     <button class="ghost" onclick="restart()">&#8635;&nbsp; Nur neu starten</button>
@@ -522,6 +607,12 @@ async function load(){
   $("logging").value=g("DEFAULT","logging","WARNING");
   $("control_enabled").checked=g("CONTROL","enabled","0")==="1";
   $("charge_template_id").value=g("CONTROL","charge_template_id","0");
+  $("web_username").value=g("WEB","username","admin");
+  const prot=g("WEB","protected",false);
+  $("secstate").textContent = prot
+    ? "🔒 Passwortschutz ist aktiv."
+    : "🔓 Kein Passwortschutz – Interface ist im Netzwerk offen zugänglich.";
+  $("secstate").style.color = prot ? "var(--ok)" : "var(--muted)";
   if($("broker_address").value==="IP_ADDR_OR_FQDN") $("broker_address").value="";
   status();
 }
@@ -534,7 +625,8 @@ function collect(){
       nominal_voltage:"230"},
     CONTROL:{enabled:$("control_enabled").checked?"1":"0",
       charge_template_id:$("charge_template_id").value},
-    WEB:{port:"8088"},
+    WEB:{port:"8088", username:$("web_username").value,
+      new_password:$("web_new_password").value, disable:$("web_disable").checked},
     MQTT:{broker_address:$("broker_address").value, broker_port:$("broker_port").value,
       username:$("username").value, password:$("password").value,
       tls_enabled:"0", mqtt_root:$("mqtt_root").value},

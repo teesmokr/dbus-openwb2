@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.3.0] – 2026-08-28
+
+### Neu
+- **Passwortschutz fürs Web-Interface** (optional, HTTP Basic Auth):
+  - Benutzername + Passwort im UI konfigurierbar (Abschnitt „Sicherheit")
+  - Passwort wird nur als **SHA-256-Hash** gespeichert, nie im Klartext und
+    nie über `/api/config` ausgeliefert
+  - abschaltbar; bei vergessenem Passwort `[WEB] password_hash` per SSH leeren
+- **README: Update-Anleitung** – wie man eine installierte Version auf dem
+  Cerbo aktualisiert (SetupHelper und manuell), `config.ini` bleibt erhalten.
+
 ## [1.2.0] – 2026-08-28
 
 ### Neu

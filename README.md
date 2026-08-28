@@ -22,6 +22,7 @@ Inspiriert von [gvzdus/dbus-mqtt-openwb](https://github.com/gvzdus/dbus-mqtt-ope
   - **Log-Viewer** – Treiber-Log im Browser, ohne SSH
   - openWB live **scannen** → erkennt Ladepunkte und Live-Werte automatisch
   - Broker, Ladepunkt-ID(s), Name, VRM-Instanz, Max-Strom, Position einstellen
+  - optionaler **Passwortschutz** (HTTP Basic Auth, Passwort nur als Hash gespeichert)
   - **Speichern** schreibt `config.ini` und startet den Treiber neu
 - **Steuerung (optional, abschaltbar)**: Start/Stop, Ladestrom und Lademodus
   aus Venus OS zurück in die openWB (Modus *Sofortladen* / *Stop* / *PV*).
@@ -65,7 +66,7 @@ verwalten (Download, Update, automatische Neuinstallation nach Firmware-Updates)
 |------|------|
 | Package name | `dbus-openwb2` |
 | GitHub user   | `teesmokr` |
-| GitHub branch/tag | `main` (oder `v1.2.0`) |
+| GitHub branch/tag | `main` (oder `v1.3.0`) |
 
 Dann **Proceed / Install**. Das mitgelieferte [`setup`](setup)-Script installiert
 `paho-mqtt`, legt die `config.ini` an und verlinkt beide Dienste.
@@ -89,6 +90,36 @@ Firmware-Updates).
 
 Danach im Browser: **`http://<venus-ip>:8088`** öffnen, openWB scannen,
 Ladepunkt übernehmen, speichern. Fertig – die Wallbox erscheint in der Geräteliste.
+
+## Aktualisieren (Update)
+
+Deine `config.ini` bleibt bei allen Wegen erhalten (sie wird nie überschrieben,
+nur angelegt, falls sie fehlt).
+
+**Mit SetupHelper:** GX-GUI → **Settings → Package manager → Active packages →
+dbus-openwb2 → Proceed** (bzw. „Check for updates" / „Update"). SetupHelper zieht
+die neueste Version und reinstalliert automatisch.
+
+**Manuell / Schnellinstallation:** einfach erneut ausführen – das Skript
+überschreibt die Programmdateien und lässt die `config.ini` in Ruhe:
+
+```bash
+cd /tmp
+wget -O dbus-openwb2.zip https://github.com/teesmokr/dbus-openwb2/archive/refs/heads/main.zip
+unzip -o dbus-openwb2.zip
+# Programmdateien aktualisieren, config.ini behalten:
+cp -R dbus-openwb2-main/* /data/etc/dbus-openwb2/
+bash /data/etc/dbus-openwb2/install.sh
+```
+
+`install.sh` erkennt eine vorhandene Installation, aktualisiert die Dienste und
+startet sie neu. Danach im Browser neu laden (Strg+F5).
+
+Aktuell installierte Version prüfen:
+
+```bash
+cat /data/etc/dbus-openwb2/version
+```
 
 ## openWB vorbereiten (MQTT)
 
