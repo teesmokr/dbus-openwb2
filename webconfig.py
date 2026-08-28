@@ -13,6 +13,7 @@ http://<venus-ip>:8088 eine Konfigurationsseite bereit:
   * Speichern -> schreibt config.ini und startet den Treiber-Dienst neu
 
 Nur Python-Standardbibliothek + paho-mqtt (fuer den Scan).
+Alle Grafiken sind eingebettetes SVG -> keine externen Requests (offline-faehig).
 """
 
 import os
@@ -58,14 +59,12 @@ DEFAULTS = {
 # --------------------------------------------------------------------------
 def read_config():
     cfg = configparser.ConfigParser()
-    # Defaults vorbelegen
     data = {sec: dict(vals) for sec, vals in DEFAULTS.items()}
     if os.path.exists(CONFIG_FILE):
         cfg.read(CONFIG_FILE)
         for sec in cfg.sections():
             data.setdefault(sec, {})
             data[sec].update(dict(cfg[sec]))
-        # configparser haelt [DEFAULT] separat
         if cfg.defaults():
             data["DEFAULT"].update(dict(cfg.defaults()))
     return data
@@ -99,7 +98,6 @@ def scan_openwb(broker, port, user, password, root, duration=4.0):
 
     def _on_message(cli, u, msg):
         parts = msg.topic.split("/")
-        # .../chargepoint/<id>/get/<...>
         try:
             i = parts.index("chargepoint")
             cp = parts[i + 1]
@@ -130,7 +128,6 @@ def scan_openwb(broker, port, user, password, root, duration=4.0):
         result["error"] = str(e)
         return result
 
-    # aufbereiten
     for cp, d in found.items():
         tpl = None
         cfg_raw = d.get("get/connected_vehicle/config")
@@ -181,7 +178,7 @@ def driver_status():
 # HTTP
 # --------------------------------------------------------------------------
 class Handler(BaseHTTPRequestHandler):
-    def log_message(self, *a):  # ruhiger
+    def log_message(self, *a):
         pass
 
     def _send(self, code, body, ctype="application/json"):
@@ -230,7 +227,7 @@ class Handler(BaseHTTPRequestHandler):
 
 
 # --------------------------------------------------------------------------
-# HTML (inline, theme-aware, ohne externe Abhaengigkeiten)
+# HTML (inline, theme-aware, alle Grafiken als SVG eingebettet)
 # --------------------------------------------------------------------------
 PAGE = r"""<!doctype html>
 <html lang="de">
@@ -240,56 +237,137 @@ PAGE = r"""<!doctype html>
 <title>openWB 2.x - Venus OS</title>
 <style>
   :root{
-    --bg:#f4f6f8; --card:#fff; --fg:#1c2430; --muted:#5b6774;
-    --border:#dde3ea; --accent:#2b7de9; --accent-fg:#fff;
-    --ok:#1a9e5f; --warn:#d98a00; --err:#d64545; --chip:#eef2f7;
+    --bg:#eef1f5; --card:#ffffff; --fg:#1c2430; --muted:#5b6774;
+    --border:#e2e7ee; --accent:#1f6fb2; --accent2:#3aa93c;
+    --accent-fg:#fff; --ok:#1a9e5f; --err:#d64545; --chip:#eef2f7;
+    --shadow:0 6px 22px rgba(20,40,70,.08); --radius:14px;
+    --owb:#3aa93c; --vic:#1f6fb2;
   }
   @media (prefers-color-scheme: dark){
-    :root{ --bg:#12161c; --card:#1b212a; --fg:#e6ebf1; --muted:#93a1b0;
-      --border:#2a323d; --accent:#4a90e2; --chip:#232b35; }
+    :root{ --bg:#0f141a; --card:#1a2029; --fg:#e6ebf1; --muted:#93a1b0;
+      --border:#28313d; --accent:#4a90e2; --chip:#232b35;
+      --shadow:0 6px 24px rgba(0,0,0,.35); --owb:#49c24b; --vic:#4a90e2; }
   }
   *{box-sizing:border-box}
   body{margin:0;background:var(--bg);color:var(--fg);
-    font:15px/1.5 -apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif}
-  .wrap{max-width:820px;margin:0 auto;padding:24px 16px 64px}
-  h1{font-size:22px;margin:0 0 4px} .sub{color:var(--muted);margin:0 0 24px}
-  .card{background:var(--card);border:1px solid var(--border);border-radius:12px;
-    padding:20px;margin-bottom:18px}
-  .card h2{font-size:16px;margin:0 0 14px}
-  label{display:block;font-size:13px;color:var(--muted);margin:12px 0 4px}
-  input,select{width:100%;padding:9px 11px;border:1px solid var(--border);
-    border-radius:8px;background:var(--bg);color:var(--fg);font-size:14px}
-  .row{display:flex;gap:14px;flex-wrap:wrap}
-  .row>div{flex:1;min-width:150px}
-  .switch{display:flex;align-items:center;gap:10px;margin-top:12px}
-  .switch input{width:auto}
-  button{cursor:pointer;border:none;border-radius:8px;padding:10px 16px;
-    font-size:14px;font-weight:600}
-  .primary{background:var(--accent);color:var(--accent-fg)}
-  .ghost{background:var(--chip);color:var(--fg)}
-  .bar{display:flex;gap:10px;flex-wrap:wrap;margin-top:8px}
-  .note{font-size:13px;color:var(--muted);margin-top:8px}
-  .cp{border:1px solid var(--border);border-radius:8px;padding:10px 12px;
-    margin-top:8px;cursor:pointer;display:flex;justify-content:space-between;gap:10px}
-  .cp:hover{border-color:var(--accent)}
-  .cp.sel{border-color:var(--accent);background:var(--chip)}
-  .cp small{color:var(--muted)}
-  #msg{padding:10px 14px;border-radius:8px;margin-bottom:16px;display:none}
+    font:15px/1.55 -apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Helvetica,Arial,sans-serif}
+  .wrap{max-width:840px;margin:0 auto;padding:0 16px 72px}
+
+  /* ---------- Hero ---------- */
+  .hero{margin:22px 0 8px;border-radius:var(--radius);overflow:hidden;
+    box-shadow:var(--shadow);
+    background:linear-gradient(120deg,var(--owb) 0%,#2f8f77 48%,var(--vic) 100%)}
+  .hero .inner{padding:26px 24px 22px;color:#fff;text-align:center;
+    background:rgba(6,20,32,.10)}
+  .hero h1{margin:14px 0 2px;font-size:23px;font-weight:700;letter-spacing:.2px}
+  .hero p{margin:0;opacity:.92;font-size:14px}
+  .flow{width:100%;max-width:460px;height:110px;display:block;margin:0 auto}
+  .brands{display:flex;justify-content:center;gap:10px;margin-top:14px;flex-wrap:wrap}
+  .badge{display:inline-flex;align-items:center;gap:8px;background:rgba(255,255,255,.16);
+    border:1px solid rgba(255,255,255,.28);padding:6px 12px;border-radius:999px;
+    font-size:13px;font-weight:600;color:#fff;backdrop-filter:blur(2px)}
+  .badge svg{display:block}
+
+  /* ---------- Message ---------- */
+  #msg{padding:11px 15px;border-radius:10px;margin:16px 0 4px;display:none;font-size:14px}
   .m-ok{background:rgba(26,158,95,.15);color:var(--ok)}
   .m-err{background:rgba(214,69,69,.15);color:var(--err)}
-  .m-info{background:rgba(43,125,233,.12);color:var(--accent)}
-  code{background:var(--chip);padding:1px 6px;border-radius:5px}
-  .status{font-size:13px;color:var(--muted);margin-top:6px}
+  .m-info{background:rgba(31,111,178,.14);color:var(--accent)}
+
+  /* ---------- Cards ---------- */
+  .card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);
+    padding:20px 22px;margin-top:18px;box-shadow:var(--shadow)}
+  .card h2{font-size:16px;margin:0 0 4px;display:flex;align-items:center;gap:11px}
+  .card .hint{color:var(--muted);font-size:13px;margin:0 0 8px 39px}
+  .ico{width:28px;height:28px;border-radius:8px;display:inline-flex;
+    align-items:center;justify-content:center;flex:0 0 28px}
+  .ico.g{background:rgba(58,169,60,.15);color:var(--owb)}
+  .ico.b{background:rgba(31,111,178,.15);color:var(--vic)}
+  .ico.o{background:rgba(217,138,0,.16);color:#d98a00}
+
+  label{display:block;font-size:12.5px;color:var(--muted);margin:12px 0 5px;font-weight:500}
+  input,select{width:100%;padding:10px 12px;border:1px solid var(--border);
+    border-radius:9px;background:var(--bg);color:var(--fg);font-size:14px;transition:border-color .15s}
+  input:focus,select:focus{outline:none;border-color:var(--accent);
+    box-shadow:0 0 0 3px rgba(31,111,178,.15)}
+  .row{display:flex;gap:14px;flex-wrap:wrap}
+  .row>div{flex:1;min-width:150px}
+  .switch{display:flex;align-items:center;gap:11px;margin:6px 0 2px}
+  .switch input{width:20px;height:20px;accent-color:var(--accent2)}
+  .switch label{margin:0;color:var(--fg);font-size:14px;font-weight:500}
+
+  button{cursor:pointer;border:none;border-radius:10px;padding:11px 18px;
+    font-size:14px;font-weight:600;transition:transform .05s,filter .15s}
+  button:active{transform:translateY(1px)}
+  .primary{background:linear-gradient(120deg,var(--accent2),var(--accent));color:#fff;
+    box-shadow:0 4px 14px rgba(31,111,178,.28)}
+  .primary:hover{filter:brightness(1.05)}
+  .ghost{background:var(--chip);color:var(--fg)}
+  .ghost:hover{filter:brightness(.97)}
+  .bar{display:flex;gap:10px;flex-wrap:wrap;margin-top:20px}
+  .note{font-size:13px;color:var(--muted);margin-top:10px}
+  code{background:var(--chip);padding:1px 6px;border-radius:5px;font-size:12.5px}
+
+  .cp{border:1px solid var(--border);border-radius:10px;padding:11px 13px;margin-top:9px;
+    cursor:pointer;display:flex;justify-content:space-between;gap:10px;transition:.12s}
+  .cp:hover{border-color:var(--accent);transform:translateY(-1px)}
+  .cp.sel{border-color:var(--accent2);background:rgba(58,169,60,.08)}
+  .cp small{color:var(--muted)}
+  .status{font-size:12.5px;color:var(--muted);margin-top:12px;text-align:center}
+  .foot{text-align:center;color:var(--muted);font-size:12px;margin-top:26px}
+  .foot b{color:var(--fg)}
 </style>
 </head>
 <body>
 <div class="wrap">
-  <h1>openWB 2.x &rarr; Venus OS</h1>
-  <p class="sub">Konfiguration des <code>dbus-openwb2</code>-Treibers</p>
+
+  <div class="hero"><div class="inner">
+    <svg class="flow" viewBox="0 0 460 110" xmlns="http://www.w3.org/2000/svg" aria-label="openWB zu Venus OS">
+      <!-- openWB Wallbox -->
+      <g transform="translate(40,18)">
+        <rect x="0" y="0" width="58" height="80" rx="10" fill="#ffffff" opacity=".95"/>
+        <rect x="10" y="10" width="38" height="26" rx="4" fill="#2f7d33"/>
+        <circle cx="29" cy="23" r="7" fill="none" stroke="#eaffea" stroke-width="2.5"/>
+        <rect x="14" y="46" width="30" height="6" rx="3" fill="#3aa93c"/>
+        <rect x="14" y="57" width="22" height="6" rx="3" fill="#cfe9d0"/>
+        <path d="M44 68 q12 0 12 12" fill="none" stroke="#3aa93c" stroke-width="3"/>
+        <circle cx="56" cy="82" r="4" fill="#3aa93c"/>
+      </g>
+      <!-- Flusslinie mit wandernden Energie-Punkten -->
+      <line x1="112" y1="58" x2="348" y2="58" stroke="#ffffff" stroke-opacity=".55" stroke-width="3" stroke-dasharray="2 8" stroke-linecap="round"/>
+      <g fill="#ffffff">
+        <circle r="4" cx="118" cy="58" opacity="0"><animate attributeName="cx" values="118;344" dur="2.2s" repeatCount="indefinite"/><animate attributeName="opacity" values="0;1;1;0" dur="2.2s" repeatCount="indefinite"/></circle>
+        <circle r="4" cx="118" cy="58" opacity="0"><animate attributeName="cx" values="118;344" dur="2.2s" begin="0.73s" repeatCount="indefinite"/><animate attributeName="opacity" values="0;1;1;0" dur="2.2s" begin="0.73s" repeatCount="indefinite"/></circle>
+        <circle r="4" cx="118" cy="58" opacity="0"><animate attributeName="cx" values="118;344" dur="2.2s" begin="1.46s" repeatCount="indefinite"/><animate attributeName="opacity" values="0;1;1;0" dur="2.2s" begin="1.46s" repeatCount="indefinite"/></circle>
+      </g>
+      <!-- Venus / Victron Energiespeicher -->
+      <g transform="translate(360,20)">
+        <rect x="0" y="6" width="60" height="70" rx="9" fill="#ffffff" opacity=".95"/>
+        <rect x="22" y="0" width="16" height="9" rx="3" fill="#ffffff" opacity=".95"/>
+        <path d="M33 16 L20 44 L30 44 L26 64 L42 34 L31 34 Z" fill="#1f6fb2"/>
+      </g>
+    </svg>
+    <h1>openWB&nbsp;2.x&nbsp; &rarr; &nbsp;Venus&nbsp;OS</h1>
+    <p>MQTT-Br&uuml;cke &amp; Konfiguration &middot; <code style="color:#fff;background:rgba(255,255,255,.18)">dbus-openwb2</code></p>
+    <div class="brands">
+      <span class="badge">
+        <svg width="16" height="16" viewBox="0 0 16 16"><circle cx="8" cy="8" r="7" fill="#3aa93c"/><path d="M9 3 L5 9 H8 L7 13 L11 6 H8 Z" fill="#fff"/></svg>
+        openWB
+      </span>
+      <span class="badge">
+        <svg width="16" height="16" viewBox="0 0 16 16"><rect x="1" y="1" width="14" height="14" rx="3" fill="#1f6fb2"/><path d="M8 3 L4 9 H7 L6.5 13 L11 7 H8 Z" fill="#fff"/></svg>
+        Victron&nbsp;Energy
+      </span>
+    </div>
+  </div></div>
+
   <div id="msg"></div>
 
   <div class="card">
-    <h2>1 &middot; Verbindung zur openWB</h2>
+    <h2><span class="ico g">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20V6a2 2 0 0 1 2-2h6a2 2 0 0 1 2 2v14"/><path d="M2 20h14"/><path d="M14 9h2a2 2 0 0 1 2 2v5a1.5 1.5 0 0 0 3 0V9l-3-3"/></svg>
+    </span>1 &middot; Verbindung zur openWB</h2>
+    <p class="hint">MQTT-Broker der openWB (Port 1883) oder eines Ziel-Brokers einer MQTT-Br&uuml;cke.</p>
     <div class="row">
       <div><label>openWB IP / Hostname</label>
         <input id="broker_address" placeholder="192.168.1.50"></div>
@@ -300,17 +378,17 @@ PAGE = r"""<!doctype html>
       <div><label>Benutzer (optional)</label><input id="username"></div>
       <div><label>Passwort (optional)</label><input id="password" type="password"></div>
     </div>
-    <div class="bar">
-      <button class="ghost" onclick="scan()">openWB scannen</button>
-    </div>
+    <div class="bar"><button class="ghost" onclick="scan()">&#128246;&nbsp; openWB scannen</button></div>
     <div id="scanresult"></div>
   </div>
 
   <div class="card">
-    <h2>2 &middot; Ladepunkt &amp; Anzeige</h2>
+    <h2><span class="ico b">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 3v4M6 3v4"/><rect x="4" y="7" width="16" height="14" rx="2"/><path d="M13 11l-3 4h4l-3 4"/></svg>
+    </span>2 &middot; Ladepunkt &amp; Anzeige</h2>
     <div class="row">
       <div><label>Ladepunkt-ID</label><input id="chargepoint_id" value="1"></div>
-      <div><label>Geraetename (in Venus)</label><input id="device_name" value="openWB"></div>
+      <div><label>Ger&auml;tename (in Venus)</label><input id="device_name" value="openWB"></div>
     </div>
     <div class="row">
       <div><label>VRM-Instanz</label><input id="device_instance" value="53"></div>
@@ -325,11 +403,12 @@ PAGE = r"""<!doctype html>
   </div>
 
   <div class="card">
-    <h2>3 &middot; Steuerung (optional)</h2>
+    <h2><span class="ico o">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/></svg>
+    </span>3 &middot; Steuerung (optional)</h2>
     <div class="switch">
       <input type="checkbox" id="control_enabled">
-      <label for="control_enabled" style="margin:0;color:var(--fg)">
-        Steuerung aus Venus OS erlauben (Start/Stop, Ladestrom, Modus)</label>
+      <label for="control_enabled">Steuerung aus Venus OS erlauben (Start/Stop, Ladestrom, Modus)</label>
     </div>
     <p class="note">Bei aktiver Steuerung setzt Venus in der openWB den Lademodus
       <code>Sofortladen</code> bzw. <code>Stop</code> und den Ladestrom.
@@ -345,10 +424,15 @@ PAGE = r"""<!doctype html>
   </div>
 
   <div class="bar">
-    <button class="primary" onclick="save()">Speichern &amp; Treiber neu starten</button>
-    <button class="ghost" onclick="restart()">Nur neu starten</button>
+    <button class="primary" onclick="save()">&#128190;&nbsp; Speichern &amp; Treiber neu starten</button>
+    <button class="ghost" onclick="restart()">&#8635;&nbsp; Nur neu starten</button>
   </div>
   <div class="status" id="drvstatus"></div>
+
+  <div class="foot">
+    <b>dbus-openwb2</b> &middot; openWB 2.x als <code>com.victronenergy.evcharger</code> in Venus OS<br>
+    Marken &amp; Logos geh&ouml;ren ihren jeweiligen Eigent&uuml;mern.
+  </div>
 </div>
 
 <script>
@@ -356,10 +440,9 @@ const $ = id => document.getElementById(id);
 const FIELDS = {
   MQTT: ["broker_address","broker_port","mqtt_root","username","password"],
   WALLBOX: ["chargepoint_id","max_current","position"],
-  DEFAULT: ["device_name","device_instance","logging"],
 };
 function msg(text, cls){ const m=$("msg"); m.textContent=text;
-  m.className=cls; m.style.display="block"; }
+  m.className=cls; m.style.display="block"; window.scrollTo({top:0,behavior:"smooth"}); }
 
 async function load(){
   const c = await (await fetch("/api/config")).json();
@@ -400,10 +483,10 @@ async function scan(){
     if(!r.ok){ msg("Scan fehlgeschlagen: "+(r.error||"?"),"m-err");
       $("scanresult").innerHTML=""; return; }
     const cps=r.chargepoints; const ids=Object.keys(cps).sort();
-    let h="<p class='note'>Gefundene Ladepunkte (klicken zum Uebernehmen):</p>";
+    let h="<p class='note'>Gefundene Ladepunkte (klicken zum &Uuml;bernehmen):</p>";
     for(const id of ids){ const d=cps[id];
       const plug=d.plug_state==="1"?"eingesteckt":"frei";
-      const chg=d.charge_state==="1"?"laedt":"steht";
+      const chg=d.charge_state==="1"?"l&auml;dt":"steht";
       h+=`<div class="cp" onclick="pick('${id}','${d.charge_template_id}')">
         <div><b>Ladepunkt ${id}</b><br><small>${d.power||0} W &middot; ${plug} &middot; ${chg}
         &middot; Soll ${d.evse_current||0} A</small></div>
@@ -416,7 +499,7 @@ function pick(id,tpl){ $("chargepoint_id").value=id;
   if(tpl && tpl!=="null" && tpl!=="undefined") $("charge_template_id").value=tpl;
   document.querySelectorAll(".cp").forEach(e=>e.classList.remove("sel"));
   event.currentTarget.classList.add("sel");
-  msg("Ladepunkt "+id+" uebernommen.","m-info"); }
+  msg("Ladepunkt "+id+" &uuml;bernommen.","m-info"); }
 async function save(){
   msg("Speichere ...","m-info");
   const r = await (await fetch("/api/save",{method:"POST",
@@ -429,7 +512,7 @@ async function restart(){
 }
 async function status(){
   try{ const r=await (await fetch("/api/status")).json();
-    $("drvstatus").textContent="Treiber: "+r.driver; }catch(e){}
+    $("drvstatus").textContent="Treiber-Status: "+r.driver; }catch(e){}
 }
 load();
 </script>
