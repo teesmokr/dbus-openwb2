@@ -16,6 +16,8 @@ Inspiriert von [gvzdus/dbus-mqtt-openwb](https://github.com/gvzdus/dbus-mqtt-ope
 - **Anzeige** der openWB in Venus-GUI und VRM: Leistung (gesamt + pro Phase),
   Energie, Ladestrom, Frequenz, Status (getrennt/verbunden/lädt), Phasenzahl
   und **Fahrzeug-Ladestand (SoC)**.
+- **Zwei APIs**: die von openWB versionsstabil gehaltene **SimpleAPI** (empfohlen)
+  oder die internen Topics – automatisch per Scan erkannt.
 - **Mehrere Ladepunkte**: je openWB-Ladepunkt ein eigener Venus-Ladestation-Service.
 - **Web-Interface** unter `http://<venus-ip>:8088`:
   - **Live-Status** (Leistung, Sollstrom, Phasen, kWh, SoC) mit Auto-Refresh
@@ -66,7 +68,7 @@ verwalten (Download, Update, automatische Neuinstallation nach Firmware-Updates)
 |------|------|
 | Package name | `dbus-openwb2` |
 | GitHub user   | `teesmokr` |
-| GitHub branch/tag | `main` (oder `v1.5.0`) |
+| GitHub branch/tag | `main` (oder `v1.6.0`) |
 
 Dann **Proceed / Install**. Das mitgelieferte [`setup`](setup)-Script installiert
 `paho-mqtt`, legt die `config.ini` an und verlinkt beide Dienste.
@@ -120,6 +122,20 @@ Aktuell installierte Version prüfen:
 ```bash
 cat /data/etc/dbus-openwb2/version
 ```
+
+## SimpleAPI vs. interne Topics
+
+Der Treiber kann die openWB-Daten über zwei MQTT-Topic-Sätze lesen
+(Einstellung **„API"** im Web-Interface bzw. `[MQTT] api_mode`):
+
+| Modus | Topics | Vorteil |
+|-------|--------|---------|
+| **`simple`** (empfohlen) | `openWB/simpleAPI/…` | Von openWB **versionsstabil** gehalten; einfachere, robustere Steuerung (kein `charge_template` nötig). Muss in der openWB unter **Einstellungen → System → SimpleAPI** aktiviert sein. |
+| **`internal`** (Standard) | `openWB/chargepoint/<id>/get/…` | Funktioniert ohne Aktivierung, kann sich aber je openWB-Version ändern. |
+
+Der **Scan** im Web-Interface erkennt automatisch, welche API verfügbar ist, und
+stellt bei erkannter SimpleAPI direkt darauf um. Empfehlung des openWB-Teams:
+**SimpleAPI** verwenden.
 
 ## openWB vorbereiten (MQTT)
 
@@ -194,17 +210,28 @@ eintragen (nicht die der openWB).
 ## Steuerung (Venus → openWB)
 
 Nur aktiv, wenn im Web-Interface **„Steuerung erlauben"** gesetzt ist
-(`[CONTROL] enabled = 1`). Verwendete Set-Topics:
+(`[CONTROL] enabled = 1`). Verwendete Set-Topics je API-Modus:
 
-| Venus-Aktion       | openWB-2-Topic                                                                   |
-|--------------------|----------------------------------------------------------------------------------|
-| `/StartStop`       | `set/vehicle/template/charge_template/<tpl>/chargemode/selected` = `instant_charging` / `stop` |
-| `/SetCurrent`      | `set/vehicle/template/charge_template/<tpl>/chargemode/instant_charging/current` (auf 6…Max A begrenzt) |
-| `/Mode`            | `.../chargemode/selected` = `instant_charging` / `pv_charging` / `scheduled_charging` |
+**SimpleAPI** (`api_mode = simple`) – einfach und stabil, kein `charge_template`:
+
+| Venus-Aktion  | openWB-Topic                                            |
+|---------------|--------------------------------------------------------|
+| `/StartStop`  | `simpleAPI/set/chargepoint/<id>/chargemode` = `instant` / `stop` |
+| `/SetCurrent` | `simpleAPI/set/chargepoint/<id>/chargecurrent` (6…Max A) |
+| `/Mode`       | `simpleAPI/set/chargepoint/<id>/chargemode` = `instant` / `pv` / `target` |
+
+**Interne Topics** (`api_mode = internal`):
+
+| Venus-Aktion  | openWB-2-Topic                                                                 |
+|---------------|--------------------------------------------------------------------------------|
+| `/StartStop`  | `set/vehicle/template/charge_template/<tpl>/chargemode/selected` = `instant_charging` / `stop` |
+| `/SetCurrent` | `set/vehicle/template/charge_template/<tpl>/chargemode/instant_charging/current` (6…Max A) |
+| `/Mode`       | `.../chargemode/selected` = `instant_charging` / `pv_charging` / `scheduled_charging` |
 
 `/MaxCurrent` ist nur ein **lokales Limit** und löst **keinen** openWB-Befehl aus.
-Die `charge_template`-ID (`<tpl>`) wird automatisch aus
-`get/connected_vehicle/config` erkannt (im Web-Interface auf `0` = auto lassen).
+Im internen Modus wird die `charge_template`-ID (`<tpl>`) automatisch aus
+`get/connected_vehicle/config` erkannt (im Web-Interface auf `0` = auto lassen);
+bei SimpleAPI entfällt das komplett.
 
 ## Name der Ladestation (EVCS-Kachel)
 

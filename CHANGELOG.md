@@ -1,5 +1,21 @@
 # Changelog
 
+## [1.6.0] – 2026-08-29
+
+### Neu
+- **openWB SimpleAPI-Unterstützung** (`api_mode = simple`, empfohlen vom
+  openWB-Team): liest den von openWB **versionsstabil** gehaltenen Topic-Baum
+  `openWB/simpleAPI/…` (power, imported, currents/1-3, voltages/1-3,
+  phases_in_use, evse_current, plug_state, charge_state, soc, chargemode).
+- **Deutlich einfachere Steuerung** im SimpleAPI-Modus über
+  `simpleAPI/set/chargepoint/<id>/chargemode` und `/chargecurrent` – **kein
+  `charge_template`-Handling** mehr nötig.
+- **Scan erkennt automatisch**, ob SimpleAPI oder die internen Topics verfügbar
+  sind, und stellt bei SimpleAPI direkt darauf um; Auswahl **„API"** im
+  Web-Interface.
+- Die internen Topics (`api_mode = internal`, Standard) bleiben als voll
+  kompatibler Fallback erhalten.
+
 ## [1.5.0] – 2026-08-28
 
 Ergebnis eines umfassenden Multi-Agenten-Reviews (Korrektheit, Sicherheit,

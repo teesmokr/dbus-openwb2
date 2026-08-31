@@ -104,6 +104,10 @@ log = logging.getLogger("dbus-openwb2")
 # --------------------------------------------------------------------------
 try:
     MQTT_ROOT      = config["MQTT"].get("mqtt_root", "openWB").rstrip("/")
+    # API: "simple" = stabile openWB-SimpleAPI (empfohlen), "internal" = interne get-Topics
+    API_MODE       = config["MQTT"].get("api_mode", "internal").strip().lower()
+    if API_MODE not in ("simple", "internal"):
+        API_MODE = "internal"
     BROKER_ADDR    = config["MQTT"]["broker_address"]
     BROKER_PORT    = int(config["MQTT"].get("broker_port", "1883"))
     MQTT_USER      = config["MQTT"].get("username", "") or None
@@ -132,11 +136,20 @@ if not CP_IDS:
 
 
 # openWB chargemode  ->  Venus /Mode  (0=Manuell, 1=Auto, 2=Zeitplan)
+# interne Topics (connected_vehicle/config -> chargemode)
 CHARGEMODE_TO_MODE = {
     "instant_charging": 0, "stop": 0, "standby": 0,
     "pv_charging": 1, "eco_charging": 1,
     "scheduled_charging": 2, "time_charging": 2,
 }
+# SimpleAPI-Vokabular (chargemode)
+SIMPLE_MODE_TO_MODE = {
+    "instant": 0, "stop": 0,
+    "pv": 1, "eco": 1,
+    "target": 2,
+}
+# chargemodes, bei denen auf PV-Ueberschuss gewartet wird (Status "Warte auf Sonne")
+PV_MODES = ("pv_charging", "eco_charging", "pv", "eco")
 
 # formatting callbacks
 _kwh = lambda p, v: "%.2f kWh" % v
@@ -177,35 +190,61 @@ class ChargePoint:
         self.session_base_time = None
         self.last_msg = 0.0
 
-        self.base = "%s/chargepoint/%d" % (MQTT_ROOT, cp_id)
-        self.topics = {
-            self.base + "/get/power":                     self._t_power,
-            self.base + "/get/imported":                  self._t_imported,
-            self.base + "/get/currents":                  self._t_currents,
-            self.base + "/get/voltages":                  self._t_voltages,
-            self.base + "/get/powers":                    self._t_powers,
-            self.base + "/get/phases_in_use":             self._t_phases,
-            self.base + "/get/evse_current":              self._t_evse,
-            self.base + "/get/frequency":                 self._t_freq,
-            self.base + "/get/plug_state":                self._t_plug,
-            self.base + "/get/charge_state":              self._t_charge,
-            self.base + "/get/connected_vehicle/config":  self._t_vehcfg,
-            self.base + "/get/connected_vehicle/soc":     self._t_soc,
-        }
+        if API_MODE == "simple":
+            self.topics = self._topics_simple(cp_id)
+        else:
+            self.topics = self._topics_internal(cp_id)
         self.svc = self._build_service()
+
+    def _topics_internal(self, cp_id):
+        b = "%s/chargepoint/%d" % (MQTT_ROOT, cp_id)
+        return {
+            b + "/get/power":                     self._t_power,
+            b + "/get/imported":                  self._t_imported,
+            b + "/get/currents":                  self._t_currents,
+            b + "/get/voltages":                  self._t_voltages,
+            b + "/get/powers":                    self._t_powers,
+            b + "/get/phases_in_use":             self._t_phases,
+            b + "/get/evse_current":              self._t_evse,
+            b + "/get/frequency":                 self._t_freq,
+            b + "/get/plug_state":                self._t_plug,
+            b + "/get/charge_state":              self._t_charge,
+            b + "/get/connected_vehicle/config":  self._t_vehcfg,
+            b + "/get/connected_vehicle/soc":     self._t_soc,
+        }
+
+    def _topics_simple(self, cp_id):
+        # stabile openWB-SimpleAPI: openWB/simpleAPI/chargepoint/<id>/<param>
+        b = "%s/simpleAPI/chargepoint/%d" % (MQTT_ROOT, cp_id)
+        return {
+            b + "/power":         self._t_power,
+            b + "/imported":      self._t_imported,
+            b + "/phases_in_use": self._t_phases,
+            b + "/evse_current":  self._t_evse,
+            b + "/plug_state":    self._t_plug,
+            b + "/charge_state":  self._t_charge,
+            b + "/soc":           self._t_soc_plain,
+            b + "/chargemode":    self._t_chargemode_simple,
+            b + "/currents/1":    partial(self._t_current_phase, 0),
+            b + "/currents/2":    partial(self._t_current_phase, 1),
+            b + "/currents/3":    partial(self._t_current_phase, 2),
+            b + "/voltages/1":    partial(self._t_voltage_phase, 0),
+            b + "/voltages/2":    partial(self._t_voltage_phase, 1),
+            b + "/voltages/3":    partial(self._t_voltage_phase, 2),
+        }
 
     # ---- Service-Aufbau ----
     def _build_service(self):
         sn = "com.victronenergy.evcharger.openwb2_%d" % self.instance
         svc = VeDbusService(sn)
         svc.add_path("/Mgmt/ProcessName", __file__)
-        svc.add_path("/Mgmt/ProcessVersion", "1.5.0 auf Python " + platform.python_version())
+        svc.add_path("/Mgmt/ProcessVersion", "1.6.0 auf Python " + platform.python_version())
         svc.add_path("/Mgmt/Connection", "MQTT openWB2 %s:%d" % (BROKER_ADDR, BROKER_PORT))
         svc.add_path("/DeviceInstance", self.instance)
         svc.add_path("/ProductId", 0xC024)
         svc.add_path("/ProductName", "openWB 2.x")
         svc.add_path("/CustomName", self.name, writeable=True)
-        svc.add_path("/FirmwareVersion", "1.5")
+        svc.add_path("/FirmwareVersion", "1.6")
         svc.add_path("/HardwareVersion", 2)
         svc.add_path("/Serial", "openwb2-cp%d" % self.id)
         svc.add_path("/Connected", 1)
@@ -327,6 +366,28 @@ class ChargePoint:
             self.svc["/Soc"] = round(self.soc, 0)
             log.debug("LP%d SoC=%s", self.id, self.soc)
 
+    # ---- SimpleAPI-spezifische Handler ----
+    def _t_soc_plain(self, p):
+        # SimpleAPI liefert den SoC direkt als Zahl
+        self.soc = _f(p)
+        self.svc["/Soc"] = round(self.soc, 0)
+
+    def _t_chargemode_simple(self, p):
+        mode = p.decode("utf-8", "ignore").strip().lower()
+        if mode:
+            self.chargemode = mode
+            self.svc["/Mode"] = SIMPLE_MODE_TO_MODE.get(mode, 0)
+            self._status()
+
+    def _t_current_phase(self, idx, p):
+        self.currents[idx] = _f(p)
+        self.svc["/Current"] = round(max(self.currents), 1)
+        self._phase_powers()
+
+    def _t_voltage_phase(self, idx, p):
+        self.voltages[idx] = _f(p)
+        self.svc["/Ac/Voltage"] = round(sum(self.voltages) / 3.0, 1)
+
     def _phase_powers(self):
         pw = self.powers if (self.powers and len(self.powers) >= 3) \
             else [self.currents[i] * self.voltages[i] for i in range(3)]
@@ -340,7 +401,7 @@ class ChargePoint:
             st = 0
         elif self.charge:
             st = 2
-        elif self.chargemode in ("pv_charging", "eco_charging"):
+        elif self.chargemode in PV_MODES:
             st = 4  # Waiting for sun (PV-Ueberschuss abwarten)
         else:
             st = 1
@@ -389,18 +450,37 @@ class ChargePoint:
             "age": round(time() - self.last_msg, 1) if self.last_msg else None,
         }
 
-    # ---- Steuerung (Venus -> openWB) ----
-    def publish_chargemode(self, mode):
-        t = "%s/set/vehicle/template/charge_template/%d/chargemode/selected" % (MQTT_ROOT, self.template_id)
-        self.client.publish(t, mode, qos=0, retain=False)
-        log.info("STEUERUNG LP%d chargemode -> %s (tpl %d)", self.id, mode, self.template_id)
+    # ---- Steuerung (Venus -> openWB), mode-abhaengig ----
+    def _clamp_current(self, amp):
+        return max(6, min(int(round(float(amp))), MAX_CURRENT))
 
-    def publish_current(self, amp):
-        # auf sinnvollen Bereich begrenzen (6 A Minimum, Max aus Config)
-        amp = max(6, min(int(round(float(amp))), MAX_CURRENT))
-        t = "%s/set/vehicle/template/charge_template/%d/chargemode/instant_charging/current" % (MQTT_ROOT, self.template_id)
-        self.client.publish(t, str(amp), qos=0, retain=False)
-        log.info("STEUERUNG LP%d Sollstrom -> %d A (tpl %d)", self.id, amp, self.template_id)
+    def cmd_startstop(self, value):
+        if API_MODE == "simple":
+            self._pub("%s/simpleAPI/set/chargepoint/%d/chargemode" % (MQTT_ROOT, self.id),
+                      "instant" if value == 1 else "stop")
+        else:
+            self._pub("%s/set/vehicle/template/charge_template/%d/chargemode/selected" % (MQTT_ROOT, self.template_id),
+                      "instant_charging" if value == 1 else "stop")
+
+    def cmd_setcurrent(self, value):
+        amp = self._clamp_current(value)
+        if API_MODE == "simple":
+            self._pub("%s/simpleAPI/set/chargepoint/%d/chargecurrent" % (MQTT_ROOT, self.id), str(amp))
+        else:
+            self._pub("%s/set/vehicle/template/charge_template/%d/chargemode/instant_charging/current" % (MQTT_ROOT, self.template_id),
+                      str(amp))
+
+    def cmd_mode(self, value):
+        if API_MODE == "simple":
+            self._pub("%s/simpleAPI/set/chargepoint/%d/chargemode" % (MQTT_ROOT, self.id),
+                      {0: "instant", 1: "pv", 2: "target"}.get(value, "instant"))
+        else:
+            self._pub("%s/set/vehicle/template/charge_template/%d/chargemode/selected" % (MQTT_ROOT, self.template_id),
+                      {0: "instant_charging", 1: "pv_charging", 2: "scheduled_charging"}.get(value, "instant_charging"))
+
+    def _pub(self, topic, payload):
+        self.client.publish(topic, payload, qos=0, retain=False)
+        log.info("STEUERUNG LP%d -> %s = %s", self.id, topic, payload)
 
 
 # --------------------------------------------------------------------------
@@ -437,14 +517,13 @@ def _on_change(cp, path, value):
         return True
     try:
         if path == "/StartStop":
-            cp.publish_chargemode("instant_charging" if value == 1 else "stop")
+            cp.cmd_startstop(value)
         elif path == "/SetCurrent":
-            cp.publish_current(value)
+            cp.cmd_setcurrent(value)
         elif path == "/MaxCurrent":
             pass  # nur lokales Limit, kein openWB-Ladebefehl
         elif path == "/Mode":
-            cp.publish_chargemode({0: "instant_charging", 1: "pv_charging",
-                                   2: "scheduled_charging"}.get(value, "instant_charging"))
+            cp.cmd_mode(value)
     except Exception:  # noqa: BLE001
         et, eo, tb = sys.exc_info()
         log.error("Fehler in _on_change: %r (Zeile %s)", eo, tb.tb_lineno)
@@ -539,7 +618,7 @@ def main():
             topic_index[t] = cp
         log.info("Ladepunkt %d -> Service openwb2_%d (%s)", cp_id, inst, name)
 
-    log.info("Steuerung: %s", "AN" if CONTROL_ENABLED else "AUS")
+    log.info("API-Modus: %s | Steuerung: %s", API_MODE, "AN" if CONTROL_ENABLED else "AUS")
 
     # connect_async + loop_start: paho verbindet selbststaendig mit Backoff und
     # blockiert/craeshet nicht, wenn die openWB beim Start (noch) nicht erreichbar ist

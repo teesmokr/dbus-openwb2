@@ -77,7 +77,7 @@ DEFAULTS = {
     "WEB":     {"port": "8088", "username": "admin", "password_hash": ""},
     "MQTT":    {"broker_address": "IP_ADDR_OR_FQDN", "broker_port": "1883",
                 "username": "", "password": "", "tls_enabled": "0",
-                "mqtt_root": "openWB"},
+                "mqtt_root": "openWB", "api_mode": "internal"},
 }
 
 
@@ -150,19 +150,23 @@ def check_credentials(user, pw):
 # openWB live scannen
 # --------------------------------------------------------------------------
 def scan_openwb(broker, port, user, password, root, duration=4.0):
-    """Verbindet kurz mit dem openWB-Broker und sammelt Ladepunkte + Werte."""
-    result = {"ok": False, "error": None, "chargepoints": {}}
+    """Verbindet kurz mit dem openWB-Broker und sammelt Ladepunkte + Werte.
+    Erkennt sowohl die stabile SimpleAPI (openWB/simpleAPI/chargepoint/...) als
+    auch die internen get-Topics (openWB/chargepoint/.../get/...)."""
+    result = {"ok": False, "error": None, "chargepoints": {}, "simple_available": False}
     root = (root or "openWB").rstrip("/")
-    found = {}
+    found = {}  # cp -> {"s:<sub>"/"i:<sub>": payload}
 
     def _on_connect(cli, u, flags, rc):
         if rc == 0:
-            cli.subscribe(root + "/chargepoint/#", qos=0)
+            cli.subscribe([(root + "/chargepoint/#", 0),
+                           (root + "/simpleAPI/chargepoint/#", 0)])
         else:
             result["error"] = "Connect rc=%s (Auth/Netzwerk pruefen)" % rc
 
     def _on_message(cli, u, msg):
         parts = msg.topic.split("/")
+        is_simple = "simpleAPI" in parts
         try:
             i = parts.index("chargepoint")
             cp = parts[i + 1]
@@ -173,11 +177,9 @@ def scan_openwb(broker, port, user, password, root, duration=4.0):
         sub = "/".join(parts[i + 2:])
         payload = msg.payload.decode("utf-8", "ignore")
         d = found.setdefault(cp, {})
-        if sub in ("get/power", "get/imported", "get/plug_state",
-                   "get/charge_state", "get/evse_current", "get/phases_in_use",
-                   "get/currents", "get/connected_vehicle/config",
-                   "get/connected_vehicle/soc"):
-            d[sub] = payload
+        d[("s:" if is_simple else "i:") + sub] = payload
+        if is_simple:
+            result["simple_available"] = True
 
     try:
         cli = make_mqtt_client("openwb2-webscan-%s" % uuid.uuid4().hex[:8])
@@ -195,33 +197,44 @@ def scan_openwb(broker, port, user, password, root, duration=4.0):
         return result
 
     for cp, d in found.items():
+        def pick(*keys):
+            for k in keys:
+                if d.get(k) is not None:
+                    return d[k]
+            return None
+
+        # SoC: SimpleAPI = Zahl, intern = JSON {"soc": ..}
+        soc = pick("s:soc")
+        if soc is None:
+            raw = pick("i:get/connected_vehicle/soc")
+            if raw:
+                try:
+                    j = json.loads(raw)
+                    soc = j.get("soc") if isinstance(j, dict) else j
+                except (ValueError, TypeError):
+                    try:
+                        soc = float(raw)
+                    except ValueError:
+                        soc = None
+        # charge_template nur bei den internen Topics
         tpl = None
-        cfg_raw = d.get("get/connected_vehicle/config")
+        cfg_raw = pick("i:get/connected_vehicle/config")
         if cfg_raw:
             try:
                 tpl = json.loads(cfg_raw).get("charge_template")
             except (ValueError, TypeError):
                 pass
-        soc = None
-        soc_raw = d.get("get/connected_vehicle/soc")
-        if soc_raw:
-            try:
-                j = json.loads(soc_raw)
-                soc = j.get("soc") if isinstance(j, dict) else j
-            except (ValueError, TypeError):
-                try:
-                    soc = float(soc_raw)
-                except ValueError:
-                    soc = None
+
         result["chargepoints"][cp] = {
-            "power": d.get("get/power"),
-            "imported": d.get("get/imported"),
-            "plug_state": d.get("get/plug_state"),
-            "charge_state": d.get("get/charge_state"),
-            "evse_current": d.get("get/evse_current"),
-            "phases_in_use": d.get("get/phases_in_use"),
+            "power": pick("s:power", "i:get/power"),
+            "imported": pick("s:imported", "i:get/imported"),
+            "plug_state": pick("s:plug_state", "i:get/plug_state"),
+            "charge_state": pick("s:charge_state", "i:get/charge_state"),
+            "evse_current": pick("s:evse_current", "i:get/evse_current"),
+            "phases_in_use": pick("s:phases_in_use", "i:get/phases_in_use"),
             "charge_template_id": tpl,
             "soc": soc,
+            "source": "simple" if any(k.startswith("s:") for k in d) else "internal",
         }
     result["ok"] = result["error"] is None
     if result["ok"] and not result["chargepoints"]:
@@ -594,7 +607,16 @@ PAGE = r"""<!doctype html>
     <div class="row">
       <div><label>Benutzer (optional)</label><input id="username"></div>
       <div><label>Passwort (optional)</label><input id="password" type="password"></div>
+      <div><label>API</label>
+        <select id="api_mode">
+          <option value="simple">SimpleAPI (empfohlen)</option>
+          <option value="internal">interne Topics</option>
+        </select></div>
     </div>
+    <p class="note">Die <b>SimpleAPI</b> (<code>openWB/simpleAPI/…</code>) ist von openWB
+      versionsstabil und muss in der openWB unter <i>Einstellungen → System → SimpleAPI</i>
+      aktiviert sein. „interne Topics" funktionieren ohne Aktivierung, können sich aber
+      je openWB-Version ändern. Der Scan erkennt automatisch, was verfügbar ist.</p>
     <div class="bar"><button class="ghost" onclick="scan()">&#128246;&nbsp; openWB scannen</button></div>
     <div id="scanresult"></div>
   </div>
@@ -712,6 +734,7 @@ async function load(){
   $("logging").value=g("DEFAULT","logging","WARNING");
   $("control_enabled").checked=g("CONTROL","enabled","0")==="1";
   $("charge_template_id").value=g("CONTROL","charge_template_id","0");
+  $("api_mode").value=g("MQTT","api_mode","internal");
   $("web_username").value=g("WEB","username","admin");
   // MQTT-Passwort wird nie ausgeliefert -> nur Platzhalter, leer = unveraendert
   $("password").value="";
@@ -739,7 +762,7 @@ function collect(){
       new_password:$("web_new_password").value, disable:$("web_disable").checked},
     MQTT:{broker_address:$("broker_address").value, broker_port:$("broker_port").value,
       username:$("username").value, password:$("password").value,
-      mqtt_root:$("mqtt_root").value},
+      mqtt_root:$("mqtt_root").value, api_mode:$("api_mode").value},
   };
 }
 async function scan(){
@@ -751,17 +774,24 @@ async function scan(){
     const r = await postJSON("/api/scan", body);
     if(!r.ok){ msg("Scan fehlgeschlagen: "+(r.error||"?"),"m-err");
       $("scanresult").innerHTML=""; return; }
+    // API automatisch auf SimpleAPI stellen, wenn erkannt (empfohlen)
+    if(r.simple_available){ $("api_mode").value="simple"; }
+    const isTrue = v => (v==="1"||v==="true"||v===true);
     const cps=r.chargepoints; const ids=Object.keys(cps).sort();
-    let h="<p class='note'>Gefundene Ladepunkte (klicken zum &Uuml;bernehmen):</p>";
+    const apiNote = r.simple_available
+      ? "<b>SimpleAPI erkannt</b> – API auf „SimpleAPI" gesetzt."
+      : "Nur interne Topics gefunden (SimpleAPI in der openWB nicht aktiv).";
+    let h="<p class='note'>"+apiNote+" Gefundene Ladepunkte (klicken zum &Uuml;bernehmen):</p>";
     for(const id of ids){ const d=cps[id];
-      const plug=d.plug_state==="1"?"eingesteckt":"frei";
-      const chg=d.charge_state==="1"?"lädt":"steht";
+      const plug=isTrue(d.plug_state)?"eingesteckt":"frei";
+      const chg=isTrue(d.charge_state)?"lädt":"steht";
       const soc = (d.soc!==null&&d.soc!==undefined)?`${Math.round(Number(d.soc)||0)} %`:"kein SoC";
       const tpl = (d.charge_template_id!==null&&d.charge_template_id!==undefined)?d.charge_template_id:"";
       const pw = Number(d.power)||0, cur = Number(d.evse_current)||0;
+      const src = d.source==="simple"?"SimpleAPI":"intern";
       h+=`<div class="cp" data-id="${esc(id)}" data-tpl="${esc(tpl)}">
-        <div><b>Ladepunkt ${esc(id)}</b><br><small>${pw} W &middot; ${plug} &middot; ${chg}
-        &middot; Soll ${cur} A &middot; SoC: ${soc}</small></div>
+        <div><b>Ladepunkt ${esc(id)}</b> <small style="color:var(--muted)">(${src})</small><br>
+        <small>${pw} W &middot; ${plug} &middot; ${chg} &middot; Soll ${cur} A &middot; SoC: ${soc}</small></div>
         <small>tpl ${esc(tpl||"?")}</small></div>`; }
     $("scanresult").innerHTML=h;
     $("scanresult").querySelectorAll(".cp").forEach(el =>
