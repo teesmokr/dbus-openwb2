@@ -68,7 +68,7 @@ verwalten (Download, Update, automatische Neuinstallation nach Firmware-Updates)
 |------|------|
 | Package name | `dbus-openwb2` |
 | GitHub user   | `teesmokr` |
-| GitHub branch/tag | `main` (oder `v1.6.0`) |
+| GitHub branch/tag | `main` (oder `v1.6.1`) |
 
 Dann **Proceed / Install**. Das mitgelieferte [`setup`](setup)-Script installiert
 `paho-mqtt`, legt die `config.ini` an und verlinkt beide Dienste.

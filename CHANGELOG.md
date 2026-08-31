@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.6.1] – 2026-08-29
+
+### Behoben
+- **SimpleAPI chargemode-Lesewert**: Die openWB-SimpleAPI reicht den chargemode
+  beim Lesen **unverändert** durch (internes Vokabular, z. B. `pv_charging`) und
+  benennt nur das Topic um. v1.6.0 mappte nur die Kurzform (`pv`) → `/Mode` war
+  im SimpleAPI-Modus teils falsch. Jetzt werden **beide** Vokabeln abgedeckt.
+  (Verifiziert gegen die openWB-core-Implementierung `simpleAPI/simpleAPI_mqtt.py`;
+  die SET-Topics akzeptieren ohnehin beide Formen.)
+
 ## [1.6.0] – 2026-08-29
 
 ### Neu

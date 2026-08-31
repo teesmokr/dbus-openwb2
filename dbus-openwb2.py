@@ -142,12 +142,16 @@ CHARGEMODE_TO_MODE = {
     "pv_charging": 1, "eco_charging": 1,
     "scheduled_charging": 2, "time_charging": 2,
 }
-# SimpleAPI-Vokabular (chargemode)
+# SimpleAPI-Set-Vokabular (fuer die Steuerung: instant/pv/eco/stop/target)
 SIMPLE_MODE_TO_MODE = {
     "instant": 0, "stop": 0,
     "pv": 1, "eco": 1,
     "target": 2,
 }
+# Die SimpleAPI reicht den chargemode-LESEwert unveraendert durch (internes
+# Vokabular, z. B. "pv_charging"). Darum beide Vokabeln kombiniert abdecken.
+ANY_MODE_TO_MODE = dict(CHARGEMODE_TO_MODE)
+ANY_MODE_TO_MODE.update(SIMPLE_MODE_TO_MODE)
 # chargemodes, bei denen auf PV-Ueberschuss gewartet wird (Status "Warte auf Sonne")
 PV_MODES = ("pv_charging", "eco_charging", "pv", "eco")
 
@@ -238,7 +242,7 @@ class ChargePoint:
         sn = "com.victronenergy.evcharger.openwb2_%d" % self.instance
         svc = VeDbusService(sn)
         svc.add_path("/Mgmt/ProcessName", __file__)
-        svc.add_path("/Mgmt/ProcessVersion", "1.6.0 auf Python " + platform.python_version())
+        svc.add_path("/Mgmt/ProcessVersion", "1.6.1 auf Python " + platform.python_version())
         svc.add_path("/Mgmt/Connection", "MQTT openWB2 %s:%d" % (BROKER_ADDR, BROKER_PORT))
         svc.add_path("/DeviceInstance", self.instance)
         svc.add_path("/ProductId", 0xC024)
@@ -373,10 +377,11 @@ class ChargePoint:
         self.svc["/Soc"] = round(self.soc, 0)
 
     def _t_chargemode_simple(self, p):
+        # SimpleAPI liefert den Lesewert im internen Vokabular (z. B. "pv_charging")
         mode = p.decode("utf-8", "ignore").strip().lower()
         if mode:
             self.chargemode = mode
-            self.svc["/Mode"] = SIMPLE_MODE_TO_MODE.get(mode, 0)
+            self.svc["/Mode"] = ANY_MODE_TO_MODE.get(mode, 0)
             self._status()
 
     def _t_current_phase(self, idx, p):
