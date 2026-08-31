@@ -1,5 +1,29 @@
 # Changelog
 
+## [2.0.0] – 2026-08-29
+
+### Geändert (Breaking)
+- **Nur noch die openWB-SimpleAPI.** Auf Empfehlung des openWB-Teams
+  ([openWB/core#3876](https://github.com/openWB/core/discussions/3876)) liest und
+  steuert der Treiber ausschließlich über `openWB/simpleAPI/…`. Die SimpleAPI ist
+  in aktuellen openWB-2-Versionen **immer aktiv** (nicht abschaltbar).
+- **Interner Topic-Modus entfernt** (`api_mode`, `charge_template_id` in der
+  Config entfallen). Grund: Das `charge_template`-Handling der internen Topics war
+  die häufigste Ursache für zerschossene openWB-Konfigurationen – die SimpleAPI
+  vermeidet das komplett.
+- Findet der Scan keine SimpleAPI-Topics (sehr alte openWB), gibt es eine klare
+  Meldung „openWB aktualisieren"; der Treiber beendet sich per Watchdog mit
+  entsprechendem Log.
+
+### Hinweis zum Update
+Bestehende `config.ini` funktioniert weiter – `api_mode`/`charge_template_id`
+werden schlicht ignoriert. Da die SimpleAPI immer aktiv ist, läuft die Anzeige
+nach dem Update ohne Zutun weiter.
+
+### Intern
+- Treiber deutlich verschlankt (interne JSON-Parser, `charge_template`-Logik,
+  Frequenz-Pfad und der `api_mode`-Zweig entfernt).
+
 ## [1.6.1] – 2026-08-29
 
 ### Behoben

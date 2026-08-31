@@ -14,10 +14,10 @@ Inspiriert von [gvzdus/dbus-mqtt-openwb](https://github.com/gvzdus/dbus-mqtt-ope
 ## Was es kann
 
 - **Anzeige** der openWB in Venus-GUI und VRM: Leistung (gesamt + pro Phase),
-  Energie, Ladestrom, Frequenz, Status (getrennt/verbunden/lädt), Phasenzahl
+  Energie, Ladestrom, Status (getrennt/verbunden/lädt), Phasenzahl
   und **Fahrzeug-Ladestand (SoC)**.
-- **Zwei APIs**: die von openWB versionsstabil gehaltene **SimpleAPI** (empfohlen)
-  oder die internen Topics – automatisch per Scan erkannt.
+- **Stabile openWB-SimpleAPI** (`openWB/simpleAPI/…`): in aktuellen openWB-2-Versionen
+  immer aktiv, versionsstabil, robust – keine `charge_template`-Fummelei.
 - **Mehrere Ladepunkte**: je openWB-Ladepunkt ein eigener Venus-Ladestation-Service.
 - **Web-Interface** unter `http://<venus-ip>:8088`:
   - **Live-Status** (Leistung, Sollstrom, Phasen, kWh, SoC) mit Auto-Refresh
@@ -68,7 +68,7 @@ verwalten (Download, Update, automatische Neuinstallation nach Firmware-Updates)
 |------|------|
 | Package name | `dbus-openwb2` |
 | GitHub user   | `teesmokr` |
-| GitHub branch/tag | `main` (oder `v1.6.1`) |
+| GitHub branch/tag | `main` (oder `v2.0.0`) |
 
 Dann **Proceed / Install**. Das mitgelieferte [`setup`](setup)-Script installiert
 `paho-mqtt`, legt die `config.ini` an und verlinkt beide Dienste.
@@ -123,19 +123,20 @@ Aktuell installierte Version prüfen:
 cat /data/etc/dbus-openwb2/version
 ```
 
-## SimpleAPI vs. interne Topics
+## SimpleAPI
 
-Der Treiber kann die openWB-Daten über zwei MQTT-Topic-Sätze lesen
-(Einstellung **„API"** im Web-Interface bzw. `[MQTT] api_mode`):
+Der Treiber liest ausschließlich die **openWB-SimpleAPI** (`openWB/simpleAPI/…`) –
+ein von openWB **versionsstabil** gehaltener Topic-Baum. Sie ist in aktuellen
+openWB-2-Versionen **immer aktiv** und muss nicht eingeschaltet werden.
 
-| Modus | Topics | Vorteil |
-|-------|--------|---------|
-| **`simple`** (empfohlen) | `openWB/simpleAPI/…` | Von openWB **versionsstabil** gehalten; einfachere, robustere Steuerung (kein `charge_template` nötig). Muss in der openWB unter **Einstellungen → System → SimpleAPI** aktiviert sein. |
-| **`internal`** (Standard) | `openWB/chargepoint/<id>/get/…` | Funktioniert ohne Aktivierung, kann sich aber je openWB-Version ändern. |
+Vorteile (Empfehlung des openWB-Teams, siehe
+[openWB/core#3876](https://github.com/openWB/core/discussions/3876)):
+- stabil über openWB-Versionen hinweg – kein Nachziehen bei internen Topic-Änderungen
+- **keine `charge_template`-Manipulation** – genau die war früher die häufigste
+  Ursache für zerschossene openWB-Konfigurationen
 
-Der **Scan** im Web-Interface erkennt automatisch, welche API verfügbar ist, und
-stellt bei erkannter SimpleAPI direkt darauf um. Empfehlung des openWB-Teams:
-**SimpleAPI** verwenden.
+Findet der Scan im Web-Interface keine SimpleAPI-Topics, ist die openWB
+vermutlich zu alt → **openWB aktualisieren**.
 
 ## openWB vorbereiten (MQTT)
 
@@ -187,51 +188,40 @@ eintragen (nicht die der openWB).
 > Servern TLS + Login verwenden. Im rein lokalen Heimnetz (openWB → Cerbo) ist
 > das meist unkritisch.
 
-## Datenzuordnung (openWB 2.x → Venus)
+## Datenzuordnung (openWB SimpleAPI → Venus)
 
-| Venus-D-Bus-Pfad        | openWB-2-Topic                                    |
-|-------------------------|---------------------------------------------------|
-| `/Ac/Power`             | `chargepoint/<id>/get/power`                       |
-| `/Ac/L{1,2,3}/Power`    | `get/powers` (bzw. `currents` × `voltages`)        |
-| `/Ac/Energy/Forward`    | `get/imported` (Wh → kWh, Gesamtzähler)             |
-| `/Session/Energy`       | `get/imported` − Stand beim Anstecken (Sitzung)     |
-| `/Session/Time`         | Dauer seit Anstecken                                |
-| `/Ac/Voltage`           | `get/voltages` (Mittelwert)                         |
-| `/Current`              | `get/currents` (Maximum)                            |
-| `/SetCurrent`           | `get/evse_current`                                  |
-| `/NrOfPhases`           | `get/phases_in_use`                                 |
-| `/Ac/Frequency`         | `get/frequency`                                     |
-| `/Soc`                  | `get/connected_vehicle/soc` → `soc`                 |
-| `/Session/Energy`       | `get/imported` − Stand beim Anstecken               |
-| `/Session/Time`         | Dauer seit Anstecken                                |
-| `/Status`               | `plug_state` + `charge_state` (+ `pv_charging` → „Warte auf Sonne") |
-| `/Mode`                 | `get/connected_vehicle/config` → `chargemode`       |
+Gelesen aus `openWB/simpleAPI/chargepoint/<id>/…`:
+
+| Venus-D-Bus-Pfad     | SimpleAPI-Topic                                        |
+|----------------------|--------------------------------------------------------|
+| `/Ac/Power`          | `power`                                                |
+| `/Ac/L{1,2,3}/Power` | `currents/{1,2,3}` × `voltages/{1,2,3}`                 |
+| `/Ac/Energy/Forward` | `imported` (Wh → kWh, Gesamtzähler)                     |
+| `/Session/Energy`    | `imported` − Stand beim Anstecken (Sitzung)            |
+| `/Session/Time`      | Dauer seit Anstecken                                   |
+| `/Ac/Voltage`        | `voltages/{1,2,3}` (Mittelwert)                        |
+| `/Current`           | `currents/{1,2,3}` (Maximum)                            |
+| `/SetCurrent`        | `evse_current`                                         |
+| `/NrOfPhases`        | `phases_in_use`                                        |
+| `/Soc`               | `soc`                                                  |
+| `/Status`            | `plug_state` + `charge_state` (+ `pv` → „Warte auf Sonne") |
+| `/Mode`              | `chargemode`                                           |
 
 ## Steuerung (Venus → openWB)
 
 Nur aktiv, wenn im Web-Interface **„Steuerung erlauben"** gesetzt ist
-(`[CONTROL] enabled = 1`). Verwendete Set-Topics je API-Modus:
+(`[CONTROL] enabled = 1`). Verwendete SimpleAPI-Set-Topics
+(`openWB/simpleAPI/set/chargepoint/<id>/…`):
 
-**SimpleAPI** (`api_mode = simple`) – einfach und stabil, kein `charge_template`:
-
-| Venus-Aktion  | openWB-Topic                                            |
+| Venus-Aktion  | SimpleAPI-Set-Topic                                    |
 |---------------|--------------------------------------------------------|
-| `/StartStop`  | `simpleAPI/set/chargepoint/<id>/chargemode` = `instant` / `stop` |
-| `/SetCurrent` | `simpleAPI/set/chargepoint/<id>/chargecurrent` (6…Max A) |
-| `/Mode`       | `simpleAPI/set/chargepoint/<id>/chargemode` = `instant` / `pv` / `target` |
-
-**Interne Topics** (`api_mode = internal`):
-
-| Venus-Aktion  | openWB-2-Topic                                                                 |
-|---------------|--------------------------------------------------------------------------------|
-| `/StartStop`  | `set/vehicle/template/charge_template/<tpl>/chargemode/selected` = `instant_charging` / `stop` |
-| `/SetCurrent` | `set/vehicle/template/charge_template/<tpl>/chargemode/instant_charging/current` (6…Max A) |
-| `/Mode`       | `.../chargemode/selected` = `instant_charging` / `pv_charging` / `scheduled_charging` |
+| `/StartStop`  | `chargemode` = `instant` / `stop`                      |
+| `/SetCurrent` | `chargecurrent` (auf 6…Max A begrenzt)                 |
+| `/Mode`       | `chargemode` = `instant` / `pv` / `target`             |
 
 `/MaxCurrent` ist nur ein **lokales Limit** und löst **keinen** openWB-Befehl aus.
-Im internen Modus wird die `charge_template`-ID (`<tpl>`) automatisch aus
-`get/connected_vehicle/config` erkannt (im Web-Interface auf `0` = auto lassen);
-bei SimpleAPI entfällt das komplett.
+Ein `charge_template`-Handling ist bei der SimpleAPI **nicht nötig** – openWB
+setzt den Modus intern korrekt um.
 
 ## Name der Ladestation (EVCS-Kachel)
 
