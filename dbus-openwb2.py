@@ -209,7 +209,7 @@ class ChargePoint:
         sn = "com.victronenergy.evcharger.openwb2_%d" % self.instance
         svc = VeDbusService(sn)
         svc.add_path("/Mgmt/ProcessName", __file__)
-        svc.add_path("/Mgmt/ProcessVersion", "2.0.1 auf Python " + platform.python_version())
+        svc.add_path("/Mgmt/ProcessVersion", "2.0.2 auf Python " + platform.python_version())
         svc.add_path("/Mgmt/Connection", "openWB SimpleAPI %s:%d" % (BROKER_ADDR, BROKER_PORT))
         svc.add_path("/DeviceInstance", self.instance)
         svc.add_path("/ProductId", 0xC024)
