@@ -199,6 +199,7 @@ Gelesen aus `openWB/simpleAPI/chargepoint/<id>/…`:
 | `/Ac/Energy/Forward` | `imported` (Wh → kWh, Gesamtzähler)                     |
 | `/Session/Energy`    | `imported` − Stand beim Anstecken (Sitzung)            |
 | `/Session/Time`      | Dauer seit Anstecken                                   |
+| `/ChargingTime`      | reine Ladezeit (zählt nur, während geladen wird)       |
 | `/Ac/Voltage`        | `voltages/{1,2,3}` (Mittelwert)                        |
 | `/Current`           | `currents/{1,2,3}` (Maximum)                            |
 | `/SetCurrent`        | `evse_current`                                         |
