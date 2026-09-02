@@ -592,11 +592,13 @@ PAGE = r"""<!doctype html>
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 3v4M6 3v4"/><rect x="4" y="7" width="16" height="14" rx="2"/><path d="M13 11l-3 4h4l-3 4"/></svg>
     </span>2 &middot; Ladepunkt &amp; Anzeige</h2>
     <div class="row">
-      <div><label>Ladepunkt-ID (mehrere kommagetrennt: 1,2)</label><input id="chargepoint_id" value="1"></div>
+      <div><label>Ladepunkt-ID(s) (mehrere kommagetrennt: 1,2)</label>
+        <input id="chargepoint_id" value="1" oninput="cpChanged()"></div>
       <div><label>Ger&auml;tename (in Venus)</label><input id="device_name" value="openWB"></div>
     </div>
     <div class="row">
-      <div><label>VRM-Instanz</label><input id="device_instance" value="53"></div>
+      <div><label>VRM-Instanz (Basis)</label>
+        <input id="device_instance" value="53" oninput="cpMap()"></div>
       <div><label>Max. Strom (A)</label><input id="max_current" value="16"></div>
       <div><label>Position</label>
         <select id="position">
@@ -605,6 +607,12 @@ PAGE = r"""<!doctype html>
           <option value="0">AC-Ausgang</option>
         </select></div>
     </div>
+    <p class="note" id="cpmap">&nbsp;</p>
+    <p class="note">Mehrere Ladepunkte? Einfach alle IDs kommagetrennt eintragen
+      (oder oben im Scan mehrere anklicken). Jeder Ladepunkt wird als eigene
+      Venus-Ladestation angelegt und bekommt <b>automatisch</b> eine eigene,
+      fortlaufende VRM-Instanz ab der Basis-Zahl – hier nur die Basis eintragen,
+      <b>nicht</b> pro Ladepunkt eine eigene.</p>
   </div>
 
   <div class="card">
@@ -708,6 +716,7 @@ async function load(){
     : "🔓 Kein Passwortschutz – Interface ist im Netzwerk offen zugänglich.";
   $("secstate").style.color = prot ? "var(--ok)" : "var(--muted)";
   if($("broker_address").value==="IP_ADDR_OR_FQDN") $("broker_address").value="";
+  cpMap();  // VRM-Instanz-Vorschau initial anzeigen
   status();
 }
 function collect(){
@@ -737,7 +746,7 @@ async function scan(){
       $("scanresult").innerHTML=""; return; }
     const isTrue = v => (v==="1"||v==="true"||v===true);
     const cps=r.chargepoints; const ids=Object.keys(cps).sort();
-    let h="<p class='note'>Gefundene Ladepunkte (klicken zum &Uuml;bernehmen):</p>";
+    let h="<p class='note'>Gefundene Ladepunkte (mehrere anklickbar &ndash; jeder wird ein eigener Ladepunkt):</p>";
     for(const id of ids){ const d=cps[id];
       const plug=isTrue(d.plug_state)?"eingesteckt":"frei";
       const chg=isTrue(d.charge_state)?"lädt":"steht";
@@ -749,14 +758,43 @@ async function scan(){
         <small>&rsaquo;</small></div>`; }
     $("scanresult").innerHTML=h;
     $("scanresult").querySelectorAll(".cp").forEach(el =>
-      el.addEventListener("click", () => pick(el.dataset.id, el)));
+      el.addEventListener("click", () => pick(el.dataset.id)));
+    syncSel();  // bereits konfigurierte Ladepunkte markieren
     msg("Scan ok: "+ids.length+" Ladepunkt(e) gefunden.","m-ok");
   }catch(e){ msg("Scan-Fehler: "+e,"m-err"); }
 }
-function pick(id,el){ $("chargepoint_id").value=id;
-  document.querySelectorAll(".cp").forEach(e=>e.classList.remove("sel"));
-  if(el) el.classList.add("sel");
-  msg("Ladepunkt "+id+" übernommen.","m-info"); }
+// Ladepunkt-Liste aus dem Feld lesen / zurueckschreiben (eindeutig, numerisch sortiert)
+function cpList(){ return $("chargepoint_id").value.split(",").map(s=>s.trim()).filter(Boolean); }
+function setCpList(arr){
+  const seen=[]; for(const x of arr){ if(!seen.includes(x)) seen.push(x); }
+  seen.sort((a,b)=>(Number(a)||0)-(Number(b)||0));
+  $("chargepoint_id").value=seen.join(",");
+  cpChanged();
+}
+// Klick auf einen gescannten Ladepunkt: in die Liste aufnehmen / wieder entfernen
+function pick(id){
+  const list=cpList(); const i=list.indexOf(String(id));
+  if(i>=0){ list.splice(i,1); msg("Ladepunkt "+id+" entfernt.","m-info"); }
+  else    { list.push(String(id)); msg("Ladepunkt "+id+" übernommen.","m-info"); }
+  setCpList(list);
+}
+// Scan-Kacheln passend zur aktuellen Liste markieren
+function syncSel(){
+  const list=cpList();
+  document.querySelectorAll("#scanresult .cp").forEach(el=>
+    el.classList.toggle("sel", list.includes(el.dataset.id)));
+}
+// Reagiert auf jede Aenderung der Ladepunkt-Liste (Tippen oder Klick)
+function cpChanged(){ syncSel(); cpMap(); }
+// Live-Vorschau: welcher Ladepunkt bekommt welche VRM-Instanz?
+function cpMap(){
+  const el=$("cpmap"); if(!el) return;
+  const list=cpList(); const base=parseInt($("device_instance").value,10);
+  if(!list.length || isNaN(base)){ el.innerHTML="&nbsp;"; return; }
+  if(list.length===1){ el.textContent="1 Ladepunkt → VRM-Instanz "+base+"."; return; }
+  const map=list.map((id,i)=>"LP"+id+" → "+(base+i));
+  el.innerHTML="<b>"+list.length+" Ladepunkte</b> → VRM-Instanzen: "+esc(map.join(",  "))+".";
+}
 async function save(){
   msg("Speichere ...","m-info");
   const r = await postJSON("/api/save", collect());

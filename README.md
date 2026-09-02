@@ -19,6 +19,9 @@ Inspiriert von [gvzdus/dbus-mqtt-openwb](https://github.com/gvzdus/dbus-mqtt-ope
 - **Stabile openWB-SimpleAPI** (`openWB/simpleAPI/…`): in aktuellen openWB-2-Versionen
   immer aktiv, versionsstabil, robust – keine `charge_template`-Fummelei.
 - **Mehrere Ladepunkte**: je openWB-Ladepunkt ein eigener Venus-Ladestation-Service.
+  Im Web-Interface alle IDs kommagetrennt eintragen (oder im Scan mehrere anklicken) –
+  jeder Ladepunkt bekommt **automatisch** eine eigene, fortlaufende VRM-Instanz ab der
+  eingetragenen Basis-Zahl. Es muss **nicht** pro Ladepunkt eine eigene VRM-ID gesetzt werden.
 - **Web-Interface** unter `http://<venus-ip>:8088`:
   - **Live-Status** (Leistung, Sollstrom, Phasen, kWh, SoC) mit Auto-Refresh
   - **Log-Viewer** – Treiber-Log im Browser, ohne SSH

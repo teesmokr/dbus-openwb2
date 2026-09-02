@@ -1,5 +1,23 @@
 # Changelog
 
+## [2.0.2] – 2026-09-02
+
+### Geändert
+- **Web-Interface: mehrere Ladepunkte einfacher einrichten.** Im Scan lassen sich
+  jetzt **mehrere Ladepunkte anklicken** – jeder Klick nimmt den Ladepunkt in die
+  (kommagetrennte) Liste auf oder entfernt ihn wieder; bereits konfigurierte
+  Ladepunkte sind vorab markiert. Bisher überschrieb ein Klick die vorherige Auswahl.
+- **VRM-Instanz klarer beschriftet** („VRM-Instanz (Basis)"): Eine **Live-Vorschau**
+  zeigt jetzt, welcher Ladepunkt welche VRM-Instanz bekommt (z. B. `LP1 → 53, LP2 → 54`).
+  Damit ist ersichtlich, dass nur **eine Basis-Instanz** einzutragen ist und die
+  weiteren Ladepunkte automatisch fortlaufende Instanzen erhalten – man muss **nicht**
+  pro Ladepunkt eine eigene VRM-ID vergeben. (Rückmeldung aus dem openWB-Forum.)
+
+### Hinweis
+Rein am Web-Interface (`webconfig.py`); der Treiber selbst und die `config.ini`
+bleiben unverändert. Der Treiber konnte mehrere Ladepunkte bereits über eine
+kommagetrennte `chargepoint_id` verwalten – nur die Bedienung war umständlich.
+
 ## [2.0.1] – 2026-09-02
 
 ### Behoben
