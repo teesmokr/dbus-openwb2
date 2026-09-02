@@ -1,5 +1,15 @@
 # Changelog
 
+## [2.0.1] – 2026-09-02
+
+### Behoben
+- **Ladezeit lief, obwohl nicht geladen wurde** ([#1](https://github.com/teesmokr/dbus-openwb2/issues/1)):
+  `/ChargingTime` zählte bisher ab dem Anstecken hoch – unabhängig davon, ob
+  tatsächlich geladen wurde. Jetzt zählt `/ChargingTime` nur noch, während
+  wirklich geladen wird (`plug_state` **und** `charge_state`), und akkumuliert
+  korrekt über Ladepausen hinweg. Die Dauer seit dem Anstecken bleibt weiterhin
+  als `/Session/Time` verfügbar.
+
 ## [2.0.0] – 2026-08-29
 
 ### Geändert (Breaking)

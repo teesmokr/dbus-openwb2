@@ -176,6 +176,9 @@ class ChargePoint:
         # Ladesitzung (seit Anstecken): Basiswerte fuer Session/Energy und /Time
         self.session_base_imported = None
         self.session_base_time = None
+        # Reine Ladezeit (/ChargingTime): laeuft nur waehrend charge_state aktiv ist
+        self.charge_seconds = 0.0
+        self.charge_since = None
         self.last_msg = 0.0
 
         self.topics = self._topics_simple(cp_id)
@@ -206,7 +209,7 @@ class ChargePoint:
         sn = "com.victronenergy.evcharger.openwb2_%d" % self.instance
         svc = VeDbusService(sn)
         svc.add_path("/Mgmt/ProcessName", __file__)
-        svc.add_path("/Mgmt/ProcessVersion", "2.0.0 auf Python " + platform.python_version())
+        svc.add_path("/Mgmt/ProcessVersion", "2.0.1 auf Python " + platform.python_version())
         svc.add_path("/Mgmt/Connection", "openWB SimpleAPI %s:%d" % (BROKER_ADDR, BROKER_PORT))
         svc.add_path("/DeviceInstance", self.instance)
         svc.add_path("/ProductId", 0xC024)
@@ -319,12 +322,31 @@ class ChargePoint:
         self.svc["/StartStop"] = 1 if self.charge else 0
         self._update_session()
 
+    def _charging_time(self):
+        """Reine Ladezeit fuer /ChargingTime.
+
+        Zaehlt nur, waehrend tatsaechlich geladen wird (plug_state UND charge_state),
+        und akkumuliert ueber Ladepausen hinweg. Nur-angesteckt (ohne Laden) laesst
+        die Ladezeit stehen; dafuer gibt es /Session/Time (Dauer seit Anstecken).
+        """
+        now = time()
+        charging = bool(self.plug and self.charge)
+        if charging and self.charge_since is None:
+            self.charge_since = now
+        elif not charging and self.charge_since is not None:
+            self.charge_seconds += now - self.charge_since
+            self.charge_since = None
+        running = (now - self.charge_since) if self.charge_since is not None else 0.0
+        return int(self.charge_seconds + running)
+
     def _update_session(self):
         """Sitzung = seit Anstecken. Speist /Session/Energy, /Session/Time, /ChargingTime."""
         if not self.plug:
             # getrennt -> keine Sitzung (Kachel zeigt "--")
             self.session_base_imported = None
             self.session_base_time = None
+            self.charge_seconds = 0.0
+            self.charge_since = None
             self.svc["/Session/Energy"] = None
             self.svc["/Session/Time"] = None
             self.svc["/ChargingTime"] = 0
@@ -336,7 +358,7 @@ class ChargePoint:
         secs = int(time() - self.session_base_time)
         self.svc["/Session/Energy"] = round(kwh, 3)
         self.svc["/Session/Time"] = secs
-        self.svc["/ChargingTime"] = secs
+        self.svc["/ChargingTime"] = self._charging_time()
 
     def tick(self):
         idx = (self.svc["/UpdateIndex"] + 1) % 256
