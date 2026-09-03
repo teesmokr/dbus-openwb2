@@ -227,6 +227,22 @@ Nur aktiv, wenn im Web-Interface **„Steuerung erlauben"** gesetzt ist
 Ein `charge_template`-Handling ist bei der SimpleAPI **nicht nötig** – openWB
 setzt den Modus intern korrekt um.
 
+## Position (AC-Eingang 1/2, AC-Ausgang)
+
+Die **Position** legt fest, wo die Wallbox **elektrisch** im Victron-System sitzt
+(`/Position` auf dem D-Bus) – sie steuert nur, an welcher Stelle die Ladestation im
+**Energiefluss-Diagramm** von VRM/gui-v2 auftaucht, und hat **nichts** mit der
+Anzahl der Ladepunkte zu tun.
+
+| Auswahl        | `/Position` | Wann |
+|----------------|:-----------:|------|
+| AC-Eingang 1   | `1`         | **Standard** – Wallbox hängt am Netzanschluss / der Hausverteilung (typischer openWB-Fall) |
+| AC-Eingang 2   | `2`         | nur bei einem zweiten AC-Eingang am Multiplus/Quattro |
+| AC-Ausgang     | `0`         | Wallbox hängt **hinter** dem Wechselrichter (an dessen AC-Out) |
+
+Der Wert beeinflusst nur die **Darstellung**, nicht die Messwerte. Im Zweifel bei
+**AC-Eingang 1** belassen.
+
 ## Name der Ladestation (EVCS-Kachel)
 
 Der Gerätename wird im Web-Interface unter **„Gerätename"** gesetzt
