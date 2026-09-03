@@ -1,5 +1,26 @@
 # Changelog
 
+## [2.0.5] – 2026-09-03
+
+### Geändert (Web-Interface)
+- **„Position" wird erklärt.** Das Feld sorgte für Fragezeichen („warum 2 Eingänge
+  und ein Ausgang?"). Ein Hinweis macht jetzt klar: Es ist die **elektrische
+  Position** der Wallbox im Victron-System (nur fürs Energiefluss-Diagramm) und
+  hat **nichts** mit der Anzahl der Ladepunkte zu tun. Die meisten openWB-Anlagen
+  hängen am Netzanschluss → **AC-Eingang 1** (Standard); der Wert beeinflusst nur
+  die Darstellung, nicht die Messwerte. (Rückmeldung aus dem openWB-Forum.)
+- **Laufende Version im Web-Interface sichtbar** (Fußzeile). So sieht man sofort,
+  ob ein Update wirklich gegriffen hat – zeigt das Interface noch die alte
+  Oberfläche, hat der Web-Dienst die neuen Dateien nicht übernommen
+  (Browser hart neu laden mit Strg+F5 bzw. `bash restart.sh`).
+- **Mehrere Ladepunkte:** Der Hinweis betont jetzt, dass **ein einziges Speichern
+  genügt** (alle IDs kommagetrennt bzw. im Scan mehrere anklicken) – kein
+  umständliches Hinzufügen und Neustarten nacheinander.
+
+### Hinweis
+Rein am Web-Interface (`webconfig.py`); Treiberlogik und `config.ini` bleiben
+unverändert.
+
 ## [2.0.4] – 2026-09-03
 
 ### Behoben

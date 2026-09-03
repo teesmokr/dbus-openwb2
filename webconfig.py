@@ -63,10 +63,21 @@ def _status_dir():
 
 CONFIG_FILE = os.path.join(HERE, "config.ini")
 SAMPLE_FILE = os.path.join(HERE, "config.sample.ini")
+VERSION_FILE = os.path.join(HERE, "version")
 STATUS_FILE = os.path.join(_status_dir(), "status.json")
 DRIVER_SERVICE = "dbus-openwb2"
 LOG_FILE = "/var/log/dbus-openwb2/current"
 MAX_BODY = 256 * 1024  # 256 KiB Obergrenze fuer POST-Bodies
+
+
+def read_version():
+    """Laufende Version aus der version-Datei (fuer die Anzeige im Web-Interface).
+    So sieht man sofort, ob ein Update wirklich gegriffen hat."""
+    try:
+        with open(VERSION_FILE) as fh:
+            return fh.read().strip() or "?"
+    except OSError:
+        return "?"
 
 DEFAULTS = {
     "DEFAULT": {"logging": "WARNING", "device_name": "openWB",
@@ -337,7 +348,8 @@ class Handler(BaseHTTPRequestHandler):
             mq["password_set"] = bool(mq.pop("password", ""))       # MQTT-Passwort nie ausliefern
             self._send(200, json.dumps(cfg))
         elif self.path == "/api/status":
-            self._send(200, json.dumps({"driver": driver_status()}))
+            self._send(200, json.dumps({"driver": driver_status(),
+                                        "version": read_version()}))
         elif self.path == "/api/live":
             self._send(200, json.dumps(read_status()))
         elif self.path == "/api/log":
@@ -601,15 +613,22 @@ PAGE = r"""<!doctype html>
         <input id="device_instance" value="53" oninput="cpMap()"></div>
       <div><label>Max. Strom (A)</label><input id="max_current" value="16"></div>
       <div><label>Position</label>
-        <select id="position">
+        <select id="position" title="Elektrische Position der Wallbox im Victron-System (nur fürs Energiefluss-Diagramm)">
           <option value="1">AC-Eingang 1</option>
           <option value="2">AC-Eingang 2</option>
           <option value="0">AC-Ausgang</option>
         </select></div>
     </div>
     <p class="note" id="cpmap">&nbsp;</p>
+    <p class="note"><b>Position</b> = wo die Wallbox <b>elektrisch</b> im Victron-System
+      sitzt (nur fürs Energiefluss-Diagramm) – <b>nicht</b> die Anzahl der Ladepunkte.
+      Die meisten openWB-Anlagen hängen am Netzanschluss/der Hausverteilung →
+      <b>AC-Eingang 1</b> (Standard). „AC-Ausgang" nur wählen, wenn die Wallbox
+      hinter dem Wechselrichter/Multiplus hängt, „AC-Eingang 2" nur bei einem zweiten
+      AC-Eingang. Der Wert beeinflusst nur die Darstellung, nicht die Messwerte.</p>
     <p class="note">Mehrere Ladepunkte? Einfach alle IDs kommagetrennt eintragen
-      (oder oben im Scan mehrere anklicken). Jeder Ladepunkt wird als eigene
+      (oder oben im Scan mehrere anklicken) – <b>ein einziges Speichern genügt</b>,
+      kein Hinzufügen nacheinander. Jeder Ladepunkt wird als eigene
       Venus-Ladestation angelegt und bekommt <b>automatisch</b> eine eigene,
       fortlaufende VRM-Instanz ab der Basis-Zahl – hier nur die Basis eintragen,
       <b>nicht</b> pro Ladepunkt eine eigene.</p>
@@ -672,7 +691,7 @@ PAGE = r"""<!doctype html>
   </div>
 
   <div class="foot">
-    <b>dbus-openwb2</b> &middot; openWB 2.x als <code>com.victronenergy.evcharger</code> in Venus OS<br>
+    <b>dbus-openwb2</b> <span id="ver"></span>&middot; openWB 2.x als <code>com.victronenergy.evcharger</code> in Venus OS<br>
     Marken &amp; Logos geh&ouml;ren ihren jeweiligen Eigent&uuml;mern.
   </div>
 </div>
@@ -806,7 +825,9 @@ async function restart(){
 }
 async function status(){
   try{ const r=await (await fetch("/api/status")).json();
-    $("drvstatus").textContent="Treiber-Status: "+r.driver; }catch(e){}
+    $("drvstatus").textContent="Treiber-Status: "+r.driver;
+    if(r.version) $("ver").innerHTML="<b>"+esc(r.version)+"</b> &middot; ";
+  }catch(e){}
 }
 function fmt(n){ return (n===null||n===undefined)?"–":n; }
 async function pollLive(){
