@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [2.0.3] – 2026-09-03
 
 ### Behoben
 - **Absturzschleife bei mehreren Ladepunkten** ([#1](https://github.com/teesmokr/dbus-openwb2/issues/1)):
