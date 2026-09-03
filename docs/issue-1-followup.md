@@ -1,105 +1,46 @@
 ## Analyse
 
-Der Melder (Kai9555) hat auf v2.0.2 aktualisiert und neu gestartet. Der zuerst
-gemeldete Punkt 1 ("Ladezeit läuft, obwohl nicht geladen wird") sollte mit
-v2.0.1 bereits behoben sein – die `/ChargingTime`-Logik in `dbus-openwb2.py`
-zählt seitdem nachweislich nur noch, während `plug_state` **und**
-`charge_state` gesetzt sind. Trotzdem beobachtet er weiterhin eine
-hochlaufende Ladezeit und hat zusätzlich ein Log mitgeschickt.
+Der neueste Kommentar des Melders (Kai9555) lautet:
 
-Das Log zeigt den eigentlichen Fehler:
+> Perfekt - funktioniert 🙌
 
-```
-KeyError: "Can't register the object-path handler for '/': there is already a handler"
-```
+Das ist die Rückmeldung auf den vorherigen Kommentar
+([#issuecomment-5521997861](https://github.com/teesmokr/dbus-openwb2/issues/1#issuecomment-5521997861)),
+in dem der Melder nach dem Update auf v2.0.3 noch eine hochlaufende
+„Ladezeit" beobachtet hatte, obwohl der Absturz-Loop (KeyError beim
+zweiten Ladepunkt) bereits behoben war. Die Ursache dafür wurde
+zwischenzeitlich identifiziert und mit **v2.0.4** behoben: Die VRM-GUI
+zeigt die „Ladezeit" aus `/Session/Time`, nicht aus `/ChargingTime` –
+gefixt wurde bis dahin aber nur Letzteres. Seit v2.0.4 werden beide
+Felder korrekt nur während echten Ladens hochgezählt (siehe
+`CHANGELOG.md`, Abschnitt „[2.0.4] – 2026-09-03").
 
-Dieser Fehler tritt beim Anlegen des **zweiten** `evcharger`-Dienstes
-(`VeDbusService`) im selben Prozess auf. Ursache: `_build_service()` rief
-bisher `VeDbusService(sn)` ohne eigene D-Bus-Verbindung auf. `vedbus.py`
-verwendet dann `dbus.SystemBus()` – und `dbus.SystemBus()` liefert (anders als
-`dbus.SystemBus(private=True)`) pro Prozess eine **gecachte, gemeinsame**
-Verbindung zurück. Legt der Treiber mehrere Ladepunkte an (kommagetrennte
-`chargepoint_id`, z. B. bei Standalone-Primary + openWB2-Secondary mit
-mehreren gescannten Ladepunkten), versuchen also mehrere `ChargePoint`-Objekte
-im selben Prozess, auf **derselben** Verbindung das Root-Objekt `/` zu
-registrieren – das schlägt für den zweiten und jeden weiteren Ladepunkt fehl.
-Der Prozess stürzt ab, der Supervisor startet ihn neu, und derselbe Fehler
-tritt wieder auf (Absturzschleife, im Log gut sichtbar an den sich
-wiederholenden "*** starting dbus-openwb2 ***"-Zeilen mit wachsendem
-Abstand).
+Der aktuelle Kommentar bestätigt, dass nach dem Update auf v2.0.4 nun
+beide gemeldeten Punkte des Issues gelöst sind:
+1. Ladezeit zählt nicht mehr hoch, wenn nicht geladen wird (Fix v2.0.4).
+2. Die Absturzschleife bei mehreren Ladepunkten ist behoben (Fix v2.0.3).
 
-Das erklärt vermutlich auch den Eindruck aus dem ursprünglichen Bericht: In
-einer Absturzschleife bekommt der Prozess nie einen stabilen, dauerhaften
-Lauf – abhängig davon, welcher (Neu-)Start gerade "übersteht", können
-Zustand und Anzeige in VRM unstimmig wirken bzw. sich Zähler anders verhalten
-als erwartet. Die eigentliche `/ChargingTime`-Logik selbst ist nach Prüfung
-des aktuellen Codes (Stand v2.0.2 / main) korrekt.
+Der dritte, offene Nebenpunkt („Gastfahrzeug" statt „Tesla" in VRM) wurde
+bereits als Plattform-Einschränkung erklärt (Victron-EVCS-Schnittstelle
+hat kein Feld für einen Fahrzeugnamen, der SoC wird aber korrekt
+übertragen) und vom Melder nicht weiter moniert.
 
-Der Fehler tritt **nur** auf, wenn mehr als eine `chargepoint_id`
-konfiguriert ist (mehrere Ladepunkte in einem Prozess). Das passt zum
-beschriebenen Setup: Standalone-Primary + openWB2-Secondary, Scan findet 3
-Ladepunkte.
-
-**Fix:** Jeder Ladepunkt bekommt jetzt eine eigene private D-Bus-Verbindung
-(`dbus.SystemBus(private=True)` bzw. `dbus.SessionBus(private=True)`, falls
-`DBUS_SESSION_BUS_ADDRESS` gesetzt ist), sodass sich mehrere `evcharger`-
-Services im selben Prozess nicht mehr um das Root-Objekt `/` streiten.
-
-Offen bleiben die von uns zuvor gestellten Rückfragen zur genauen
-Ladepunkt-Zuordnung (welche `chargepoint_id`(s) in der Config, welche IDs der
-Scan gefunden hat, an welchem Ladepunkt physisch der Tesla hängt) – die
-lassen sich ohne weitere Angaben des Melders nicht abschließend klären. Der
-jetzige Fix behebt aber unabhängig davon die Absturzursache, sodass der
-Dienst bei mehreren konfigurierten Ladepunkten überhaupt stabil läuft.
+Es ist **keine Codeänderung** erforderlich – lediglich eine bestätigende
+Antwort und ggf. das Schließen des Issues durch den Maintainer.
 
 ## Antwort-Entwurf
 
-Hallo,
+Klasse, danke für die Rückmeldung! 🙌 Freut mich, dass jetzt beides passt:
+kein Absturz mehr bei mehreren Ladepunkten (v2.0.3) und die Ladezeit in
+VRM zählt nur noch während des tatsächlichen Ladens (v2.0.4).
 
-danke für das Log – damit lässt sich der eigentliche Fehler klar erkennen:
-
-```
-KeyError: "Can't register the object-path handler for '/': there is already a handler"
-```
-
-Das ist kein Problem der `/ChargingTime`-Logik selbst (die ist seit v2.0.1
-korrekt), sondern ein Absturz beim Start: Wenn mehr als ein Ladepunkt
-konfiguriert ist (kommagetrennte `chargepoint_id`, bei dir also vermutlich
-mehrere der 3 gefundenen Ladepunkte), hat der Treiber bisher versucht, alle
-zugehörigen D-Bus-Dienste über **eine** gemeinsame D-Bus-Verbindung
-anzulegen. Das funktioniert für den ersten Ladepunkt, scheitert aber beim
-zweiten – der Prozess stürzt ab und wird ständig neu gestartet. Das erklärt
-vermutlich auch, warum sich die Ladezeit-Anzeige für dich unstimmig verhält:
-Der Dienst kam bei dir nie in einen sauberen Dauerbetrieb.
-
-Ich habe das behoben: Jeder Ladepunkt bekommt jetzt eine eigene, private
-D-Bus-Verbindung, sodass sich mehrere Ladepunkte im selben Prozess nicht mehr
-gegenseitig blockieren. Der Fix ist als Pull Request vorbereitet und wird
-mit der nächsten Version ausgeliefert.
-
-Zur Ladepunkt-Zuordnung (Punkt 2, "Tesla" vs. "Gastfahrzeug" im VRM) bleiben
-meine Rückfragen von vorhin bestehen, falls du dazu noch etwas sagen
-kannst:
-- Welche `chargepoint_id`(s) hast du aktuell in der Config eingetragen?
-- Welche Ladepunkt-IDs hat der Scan im Web-Interface gefunden?
-- An welchem Ladepunkt hängt physisch dein Tesla, und zeigt openWB dort den
-  richtigen SoC an?
-
-Sobald der Absturz nicht mehr auftritt, lässt sich das leichter beurteilen –
-magst du nach dem Update kurz berichten, ob die Ladezeit sich jetzt korrekt
-verhält?
+Falls dir noch etwas an der SoC-/Ladepunkt-Zuordnung bei deinem Standalone-
+Primary + openWB2-Secondary-Setup auffällt, meld dich gerne wieder – sonst
+mache ich das Issue jetzt zu. Danke nochmal fürs geduldige Testen und die
+guten Logs, die haben sehr geholfen!
 
 ## Codeaenderung
 
-- `dbus-openwb2.py`: `_build_service()` übergibt `VeDbusService` jetzt eine
-  eigene private D-Bus-Verbindung (`dbus.SystemBus(private=True)` bzw.
-  `dbus.SessionBus(private=True)`) statt der ungenannten, prozessweit
-  gecachten Standardverbindung. Damit können mehrere Ladepunkte
-  (kommagetrennte `chargepoint_id`) im selben Prozess ihr jeweiliges
-  Root-Objekt `/` registrieren, ohne zu kollidieren – das behebt die im Log
-  sichtbare Absturzschleife (`KeyError: Can't register the object-path
-  handler for '/': there is already a handler`).
-- `CHANGELOG.md`: Eintrag unter „Unreleased" ergänzt.
-
-Geprüft mit `python3 -m py_compile dbus-openwb2.py webconfig.py` und
-`python3 -m pyflakes dbus-openwb2.py webconfig.py` (beide ohne Befund).
+keine – reine Rückfrage/Antwort (Bestätigung des Melders, dass die Fixes
+aus v2.0.3/v2.0.4 sein Problem gelöst haben; kein weiterer Handlungsbedarf
+im Code).
