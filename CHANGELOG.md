@@ -1,5 +1,18 @@
 # Changelog
 
+## [Unreleased]
+
+### Behoben
+- **Absturzschleife bei mehreren Ladepunkten** ([#1](https://github.com/teesmokr/dbus-openwb2/issues/1)):
+  Bei mehr als einer `chargepoint_id` in der Config (kommagetrennt) legt der Treiber
+  mehrere `evcharger`-Services in einem Prozess an. Da `VeDbusService` bislang ohne
+  eigene D-Bus-Verbindung aufgerufen wurde, teilten sich alle Ladepunkte dieselbe
+  (von `dbus.SystemBus()` gecachte) Verbindung – beim zweiten/dritten Ladepunkt
+  kollidierte die Registrierung des Root-Objekts `/` mit `KeyError: Can't register
+  the object-path handler for '/': there is already a handler`, der Dienst
+  crashte und wurde vom Supervisor endlos neu gestartet. Jeder Ladepunkt bekommt
+  jetzt eine eigene private D-Bus-Verbindung.
+
 ## [2.0.2] – 2026-09-02
 
 ### Geändert

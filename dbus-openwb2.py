@@ -36,6 +36,7 @@ except ImportError:
     import paho.mqtt.client as mqtt
 
 sys.path.insert(1, os.path.join(HERE, "ext", "velib_python"))
+import dbus  # noqa: E402
 from vedbus import VeDbusService  # noqa: E402
 
 
@@ -207,7 +208,15 @@ class ChargePoint:
     # ---- Service-Aufbau ----
     def _build_service(self):
         sn = "com.victronenergy.evcharger.openwb2_%d" % self.instance
-        svc = VeDbusService(sn)
+        # Eigene (private) D-Bus-Verbindung je Ladepunkt: VeDbusService registriert
+        # bei jedem Aufruf ein Root-Objekt auf "/". Ohne private=True liefert
+        # dbus.SystemBus() dieselbe (gecachte) Verbindung fuer den ganzen Prozess
+        # zurueck - beim zweiten/dritten Ladepunkt (mehrere chargepoint_id in der
+        # Config) kollidiert das mit "Can't register the object-path handler for
+        # '/': there is already a handler" und der Dienst crasht in einer Schleife.
+        bus = dbus.SessionBus(private=True) if "DBUS_SESSION_BUS_ADDRESS" in os.environ \
+            else dbus.SystemBus(private=True)
+        svc = VeDbusService(sn, bus=bus)
         svc.add_path("/Mgmt/ProcessName", __file__)
         svc.add_path("/Mgmt/ProcessVersion", "2.0.2 auf Python " + platform.python_version())
         svc.add_path("/Mgmt/Connection", "openWB SimpleAPI %s:%d" % (BROKER_ADDR, BROKER_PORT))
