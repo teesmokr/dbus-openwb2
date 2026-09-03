@@ -174,9 +174,8 @@ class ChargePoint:
         self.charge = 0
         self.chargemode = "stop"
         self.soc = None
-        # Ladesitzung (seit Anstecken): Basiswerte fuer Session/Energy und /Time
+        # Ladesitzung (seit Anstecken): Basiswert fuer Session/Energy
         self.session_base_imported = None
-        self.session_base_time = None
         # Reine Ladezeit (/ChargingTime): laeuft nur waehrend charge_state aktiv ist
         self.charge_seconds = 0.0
         self.charge_since = None
@@ -218,7 +217,7 @@ class ChargePoint:
             else dbus.SystemBus(private=True)
         svc = VeDbusService(sn, bus=bus)
         svc.add_path("/Mgmt/ProcessName", __file__)
-        svc.add_path("/Mgmt/ProcessVersion", "2.0.3 auf Python " + platform.python_version())
+        svc.add_path("/Mgmt/ProcessVersion", "2.0.4 auf Python " + platform.python_version())
         svc.add_path("/Mgmt/Connection", "openWB SimpleAPI %s:%d" % (BROKER_ADDR, BROKER_PORT))
         svc.add_path("/DeviceInstance", self.instance)
         svc.add_path("/ProductId", 0xC024)
@@ -349,11 +348,17 @@ class ChargePoint:
         return int(self.charge_seconds + running)
 
     def _update_session(self):
-        """Sitzung = seit Anstecken. Speist /Session/Energy, /Session/Time, /ChargingTime."""
+        """Sitzung seit Anstecken. Speist /Session/Energy, /Session/Time, /ChargingTime.
+
+        WICHTIG: Die Venus-EVCS-Anzeige ("Ladezeit") liest /Session/Time (Kachel und
+        Detailseite, siehe gui-v2 EvcsWidget/EvCharger). /ChargingTime wird von der
+        GUI nicht angezeigt. Damit die angezeigte Ladezeit NICHT schon beim blossen
+        Anstecken hochzaehlt, sondern nur waehrend tatsaechlich geladen wird, speisen
+        wir /Session/Time (und /ChargingTime) aus der reinen Ladezeit _charging_time().
+        """
         if not self.plug:
             # getrennt -> keine Sitzung (Kachel zeigt "--")
             self.session_base_imported = None
-            self.session_base_time = None
             self.charge_seconds = 0.0
             self.charge_since = None
             self.svc["/Session/Energy"] = None
@@ -362,12 +367,11 @@ class ChargePoint:
             return
         if self.session_base_imported is None:
             self.session_base_imported = self.imported
-            self.session_base_time = time()
         kwh = max(0.0, self.imported - self.session_base_imported) / 1000.0
-        secs = int(time() - self.session_base_time)
+        ct = self._charging_time()
         self.svc["/Session/Energy"] = round(kwh, 3)
-        self.svc["/Session/Time"] = secs
-        self.svc["/ChargingTime"] = self._charging_time()
+        self.svc["/Session/Time"] = ct
+        self.svc["/ChargingTime"] = ct
 
     def tick(self):
         idx = (self.svc["/UpdateIndex"] + 1) % 256

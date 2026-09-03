@@ -1,5 +1,17 @@
 # Changelog
 
+## [2.0.4] – 2026-09-03
+
+### Behoben
+- **Ladezeit zählt hoch, obwohl nicht geladen wird** ([#1](https://github.com/teesmokr/dbus-openwb2/issues/1)):
+  Die Venus-EVCS-Anzeige liest die „Ladezeit" aus **`/Session/Time`** (Kachel und
+  Detailseite, siehe gui-v2). Dieses Feld wurde bisher als Dauer *seit Anstecken*
+  befüllt und lief daher hoch, sobald ein Fahrzeug steckte – auch bei openWB-Modus
+  „Stop". Jetzt speisen sich `/Session/Time` **und** `/ChargingTime` aus der reinen
+  Ladezeit: Sie läuft nur, während tatsächlich geladen wird (`plug_state` **und**
+  `charge_state`), friert bei Ladepausen ein und setzt beim Abstecken zurück.
+  (Der v2.0.1-Fix hatte nur `/ChargingTime` angepasst – das die GUI gar nicht anzeigt.)
+
 ## [2.0.3] – 2026-09-03
 
 ### Behoben
