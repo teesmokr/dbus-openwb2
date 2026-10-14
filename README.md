@@ -18,6 +18,8 @@ Inspiriert von [gvzdus/dbus-mqtt-openwb](https://github.com/gvzdus/dbus-mqtt-ope
   und **Fahrzeug-Ladestand (SoC)**.
 - **Stabile openWB-SimpleAPI** (`openWB/simpleAPI/…`): in aktuellen openWB-2-Versionen
   immer aktiv, versionsstabil, robust – keine `charge_template`-Fummelei.
+  Transport **MQTT** (Standard, push) oder optional **HTTP** (bei aktiver
+  openWB-Benutzerverwaltung, siehe unten).
 - **Mehrere Ladepunkte**: je openWB-Ladepunkt ein eigener Venus-Ladestation-Service.
   Im Web-Interface alle IDs kommagetrennt eintragen (oder im Scan mehrere anklicken) –
   jeder Ladepunkt bekommt **automatisch** eine eigene, fortlaufende VRM-Instanz ab der
@@ -190,6 +192,46 @@ eintragen (nicht die der openWB).
 > jeden frei, der Zugriff auf den Ziel-Broker hat. Für Brücken zu externen
 > Servern TLS + Login verwenden. Im rein lokalen Heimnetz (openWB → Cerbo) ist
 > das meist unkritisch.
+
+## openWB mit Benutzerverwaltung → HTTP-Transport (experimentell)
+
+Sobald in der openWB die **Benutzerverwaltung** aktiviert wird, schaltet openWB
+den **unverschlüsselten MQTT-Port 1883 ab**. Scan und Treiber melden dann
+**„Connection refused"** – ein reiner TCP-Refused (kein Auth-Fehler, der käme als
+`Connect rc=5`). Die MQTT-Variante (A/B oben) funktioniert in diesem Fall nicht.
+
+openWB bietet dieselbe SimpleAPI zusätzlich über **HTTP** an. Diese läuft über
+Port 80/443 (bleibt immer offen) und unterstützt Authentifizierung, funktioniert
+also auch bei aktiver Benutzerverwaltung. Dafür gibt es den optionalen
+**HTTP-Transport**:
+
+1. In der **openWB** die **HTTP-SimpleAPI aktivieren** (muss manuell eingeschaltet
+   werden) und ggf. Token/Benutzer anlegen.
+2. Im Web-Interface unter **1 · Verbindung** die **Datenquelle auf „HTTP-SimpleAPI"**
+   umstellen, Host/Schema/Port/Authentifizierung eintragen und scannen.
+
+Entspricht in der `config.ini`:
+
+```ini
+[SOURCE]
+transport = http
+
+[HTTP]
+host = 192.168.1.50
+scheme = http
+auth_mode = userpass      ; none | userpass | token
+username = admin
+password = ...
+verify_tls = 1            ; bei selbstsigniertem HTTPS-Zertifikat auf 0
+poll_interval = 5
+```
+
+> **Experimentell / noch nicht auf Hardware getestet.** HTTP ist **Polling** (statt
+> MQTT-Push), die Anzeige aktualisiert sich alle paar Sekunden. Das genaue
+> JSON-Schema von `get_chargepoint_all` ist in der openWB-Doku nur als Auszug
+> dokumentiert – das Feld-Mapping ist defensiv, kann aber je nach openWB-Version
+> abweichen. **Ohne Benutzerverwaltung bleibt MQTT der empfohlene Weg.**
+> Rückmeldungen (inkl. einer echten `get_chargepoint_all`-Antwort) sind willkommen.
 
 ## Datenzuordnung (openWB SimpleAPI → Venus)
 

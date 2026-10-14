@@ -89,6 +89,11 @@ DEFAULTS = {
     "MQTT":    {"broker_address": "IP_ADDR_OR_FQDN", "broker_port": "1883",
                 "username": "", "password": "", "tls_enabled": "0",
                 "mqtt_root": "openWB"},
+    "SOURCE":  {"transport": "mqtt"},
+    "HTTP":    {"host": "", "scheme": "http", "port": "",
+                "path": "/openWB/simpleAPI/simpleapi.php", "auth_mode": "none",
+                "token": "", "username": "", "password": "",
+                "verify_tls": "1", "poll_interval": "5"},
 }
 
 
@@ -119,7 +124,7 @@ def write_config(data):
     cfg = configparser.ConfigParser()
     for key, val in data.get("DEFAULT", {}).items():
         cfg["DEFAULT"][key] = str(val)
-    for sec in ("WALLBOX", "CONTROL", "WEB", "MQTT"):
+    for sec in ("WALLBOX", "CONTROL", "WEB", "MQTT", "SOURCE", "HTTP"):
         cfg[sec] = {k: str(v) for k, v in data.get(sec, {}).items()}
     # atomar schreiben: tmp + fsync + rename
     tmp = CONFIG_FILE + ".tmp"
@@ -223,6 +228,36 @@ def scan_openwb(broker, port, user, password, root, duration=4.0):
                            "Die SimpleAPI (openWB/simpleAPI/...) ist in aktuellen "
                            "openWB-2-Versionen immer aktiv – bitte die openWB "
                            "aktualisieren. (Root-Topic Standard: 'openWB'.)")
+        result["ok"] = False
+    return result
+
+
+def scan_openwb_http(host, scheme, port, path, auth_mode, token, username, password, verify_tls):
+    """Scan ueber die HTTP-SimpleAPI (optional, bei aktiver openWB-Benutzerverwaltung)."""
+    result = {"ok": False, "error": None, "chargepoints": {}}
+    if not host:
+        result["error"] = "openWB-Host/IP fehlt."
+        return result
+    try:
+        from openwb_http import OpenWBHttp
+    except ImportError as e:
+        result["error"] = "HTTP-Modul nicht gefunden: %s" % e
+        return result
+    verify = verify_tls if isinstance(verify_tls, bool) else str(verify_tls) == "1"
+    try:
+        cli = OpenWBHttp(host=host, scheme=scheme, port=port, path=path,
+                         auth_mode=auth_mode, token=token, username=username,
+                         password=password, verify_tls=verify)
+        result["chargepoints"] = cli.scan()
+    except Exception as e:  # noqa: BLE001
+        result["error"] = str(e)
+        return result
+    result["ok"] = result["error"] is None
+    if result["ok"] and not result["chargepoints"]:
+        result["error"] = ("Verbunden, aber keine Ladepunkte ueber HTTP gefunden. "
+                           "Ist die HTTP-SimpleAPI in der openWB aktiviert und die "
+                           "Authentifizierung korrekt? (Pfad-Standard: "
+                           "/openWB/simpleAPI/simpleapi.php)")
         result["ok"] = False
     return result
 
@@ -346,6 +381,9 @@ class Handler(BaseHTTPRequestHandler):
             web["protected"] = bool(web.pop("password_hash", ""))   # Hash nie ausliefern
             mq = cfg.get("MQTT", {})
             mq["password_set"] = bool(mq.pop("password", ""))       # MQTT-Passwort nie ausliefern
+            ht = cfg.get("HTTP", {})
+            ht["password_set"] = bool(ht.pop("password", ""))       # HTTP-Passwort nie ausliefern
+            ht["token_set"] = bool(ht.pop("token", ""))             # HTTP-Token nie ausliefern
             self._send(200, json.dumps(cfg))
         elif self.path == "/api/status":
             self._send(200, json.dumps({"driver": driver_status(),
@@ -366,11 +404,23 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if self.path == "/api/scan":
                 b = self._json_body()
-                cur_mqtt = read_config().get("MQTT", {})
-                user = b.get("username") or cur_mqtt.get("username", "")
-                pw = b.get("password") or cur_mqtt.get("password", "")
-                res = scan_openwb(b.get("broker_address"), b.get("broker_port", 1883),
-                                  user, pw, b.get("mqtt_root", "openWB"))
+                transport = (b.get("transport") or "mqtt").strip().lower()
+                if transport == "http":
+                    cur_http = read_config().get("HTTP", {})
+                    token = b.get("token") or cur_http.get("token", "")
+                    pw = b.get("password") or cur_http.get("password", "")
+                    res = scan_openwb_http(
+                        b.get("host"), b.get("scheme", "http"), b.get("port", ""),
+                        b.get("path", "/openWB/simpleAPI/simpleapi.php"),
+                        b.get("auth_mode", "none"), token,
+                        b.get("username", ""), pw,
+                        b.get("verify_tls", True))
+                else:
+                    cur_mqtt = read_config().get("MQTT", {})
+                    user = b.get("username") or cur_mqtt.get("username", "")
+                    pw = b.get("password") or cur_mqtt.get("password", "")
+                    res = scan_openwb(b.get("broker_address"), b.get("broker_port", 1883),
+                                      user, pw, b.get("mqtt_root", "openWB"))
                 self._send(200, json.dumps(res))
             elif self.path == "/api/save":
                 data = self._json_body()
@@ -378,8 +428,9 @@ class Handler(BaseHTTPRequestHandler):
                 # Merge: bestehende Config als Basis, nur gelieferte Felder ueberschreiben
                 # -> per SSH gepflegte Werte (tls_enabled, timeout, ...) bleiben erhalten
                 merged = {sec: dict(cur.get(sec, {}))
-                          for sec in ("DEFAULT", "WALLBOX", "CONTROL", "WEB", "MQTT")}
-                for sec in ("DEFAULT", "WALLBOX", "CONTROL", "MQTT"):
+                          for sec in ("DEFAULT", "WALLBOX", "CONTROL", "WEB", "MQTT",
+                                      "SOURCE", "HTTP")}
+                for sec in ("DEFAULT", "WALLBOX", "CONTROL", "MQTT", "SOURCE", "HTTP"):
                     for k, v in (data.get(sec) or {}).items():
                         merged[sec][k] = v
 
@@ -401,6 +452,14 @@ class Handler(BaseHTTPRequestHandler):
                 if not (merged["MQTT"].get("password") or "").strip():
                     merged["MQTT"]["password"] = cur.get("MQTT", {}).get("password", "")
                 merged["MQTT"].pop("password_set", None)
+
+                # HTTP-Passwort/Token: leeres Feld = unveraendert (werden nie ans UI geliefert)
+                if not (merged["HTTP"].get("password") or "").strip():
+                    merged["HTTP"]["password"] = cur.get("HTTP", {}).get("password", "")
+                if not (merged["HTTP"].get("token") or "").strip():
+                    merged["HTTP"]["token"] = cur.get("HTTP", {}).get("token", "")
+                merged["HTTP"].pop("password_set", None)
+                merged["HTTP"].pop("token_set", None)
 
                 write_config(merged)
                 ok, msg = restart_driver()
@@ -581,20 +640,67 @@ PAGE = r"""<!doctype html>
     <h2><span class="ico g">
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20V6a2 2 0 0 1 2-2h6a2 2 0 0 1 2 2v14"/><path d="M2 20h14"/><path d="M14 9h2a2 2 0 0 1 2 2v5a1.5 1.5 0 0 0 3 0V9l-3-3"/></svg>
     </span>1 &middot; Verbindung zur openWB</h2>
-    <p class="hint">MQTT-Broker der openWB (Port 1883) oder eines Ziel-Brokers einer MQTT-Br&uuml;cke.</p>
     <div class="row">
-      <div><label>openWB IP / Hostname</label>
-        <input id="broker_address" placeholder="192.168.1.50"></div>
-      <div><label>MQTT-Port</label><input id="broker_port" value="1883"></div>
-      <div><label>Root-Topic</label><input id="mqtt_root" value="openWB"></div>
+      <div><label>Datenquelle (Transport)</label>
+        <select id="transport" onchange="transportChanged()">
+          <option value="mqtt">MQTT (Standard, Port 1883)</option>
+          <option value="http">HTTP-SimpleAPI (bei openWB-Benutzerverwaltung)</option>
+        </select></div>
     </div>
-    <div class="row">
-      <div><label>Benutzer (optional)</label><input id="username"></div>
-      <div><label>Passwort (optional)</label><input id="password" type="password"></div>
+
+    <div id="mqttfields">
+      <p class="hint">MQTT-Broker der openWB (Port 1883) oder eines Ziel-Brokers einer MQTT-Br&uuml;cke.</p>
+      <div class="row">
+        <div><label>openWB IP / Hostname</label>
+          <input id="broker_address" placeholder="192.168.1.50"></div>
+        <div><label>MQTT-Port</label><input id="broker_port" value="1883"></div>
+        <div><label>Root-Topic</label><input id="mqtt_root" value="openWB"></div>
+      </div>
+      <div class="row">
+        <div><label>Benutzer (optional)</label><input id="username"></div>
+        <div><label>Passwort (optional)</label><input id="password" type="password"></div>
+      </div>
+      <p class="note">Nutzt die stabile <b>openWB-SimpleAPI</b> (<code>openWB/simpleAPI/…</code>) –
+        in aktuellen openWB-2-Versionen immer aktiv, keine Einstellung nötig. Wird beim
+        Scan nichts gefunden, ist die openWB vermutlich zu alt → bitte aktualisieren.</p>
     </div>
-    <p class="note">Nutzt die stabile <b>openWB-SimpleAPI</b> (<code>openWB/simpleAPI/…</code>) –
-      in aktuellen openWB-2-Versionen immer aktiv, keine Einstellung nötig. Wird beim
-      Scan nichts gefunden, ist die openWB vermutlich zu alt → bitte aktualisieren.</p>
+
+    <div id="httpfields" style="display:none">
+      <p class="hint">HTTP-SimpleAPI der openWB – funktioniert auch bei aktivierter
+        <b>Benutzerverwaltung</b> (dann ist MQTT auf 1883 oft abgeschaltet → „Connection refused").
+        Muss in der openWB <b>manuell aktiviert</b> werden. <b>Experimentell.</b></p>
+      <div class="row">
+        <div><label>openWB IP / Hostname</label>
+          <input id="http_host" placeholder="192.168.1.50"></div>
+        <div><label>Schema</label>
+          <select id="http_scheme"><option value="http">http</option><option value="https">https</option></select></div>
+        <div><label>Port (leer = Standard)</label><input id="http_port" placeholder="80 / 443"></div>
+      </div>
+      <div class="row">
+        <div style="flex:2 1 320px"><label>Pfad</label>
+          <input id="http_path" value="/openWB/simpleAPI/simpleapi.php"></div>
+        <div><label>Authentifizierung</label>
+          <select id="http_auth_mode" onchange="transportChanged()">
+            <option value="none">keine</option>
+            <option value="userpass">Benutzer/Passwort</option>
+            <option value="token">Bearer-Token</option>
+          </select></div>
+      </div>
+      <div class="row" id="http_userpass">
+        <div><label>Benutzer</label><input id="http_username"></div>
+        <div><label>Passwort</label><input id="http_password" type="password"></div>
+      </div>
+      <div class="row" id="http_tokenrow" style="display:none">
+        <div><label>Bearer-Token</label><input id="http_token" type="password"></div>
+      </div>
+      <div class="switch">
+        <input type="checkbox" id="http_verify_tls" checked>
+        <label for="http_verify_tls">TLS-Zertifikat prüfen (bei selbstsigniertem Zertifikat deaktivieren)</label>
+      </div>
+      <p class="note">Nur nötig, wenn der MQTT-Zugang (Port 1883) durch die openWB-Benutzerverwaltung
+        gesperrt ist. Ansonsten ist <b>MQTT der empfohlene Weg</b> (push statt polling).</p>
+    </div>
+
     <div class="bar"><button class="ghost" onclick="scan()">&#128246;&nbsp; openWB scannen</button></div>
     <div id="scanresult"></div>
   </div>
@@ -735,12 +841,34 @@ async function load(){
     : "🔓 Kein Passwortschutz – Interface ist im Netzwerk offen zugänglich.";
   $("secstate").style.color = prot ? "var(--ok)" : "var(--muted)";
   if($("broker_address").value==="IP_ADDR_OR_FQDN") $("broker_address").value="";
+  // HTTP-Transport laden
+  $("transport").value=g("SOURCE","transport","mqtt");
+  $("http_host").value=g("HTTP","host","");
+  $("http_scheme").value=g("HTTP","scheme","http");
+  $("http_port").value=g("HTTP","port","");
+  $("http_path").value=g("HTTP","path","/openWB/simpleAPI/simpleapi.php");
+  $("http_auth_mode").value=g("HTTP","auth_mode","none");
+  $("http_username").value=g("HTTP","username","");
+  $("http_verify_tls").checked=g("HTTP","verify_tls","1")==="1";
+  $("http_password").value=""; $("http_token").value="";
+  $("http_password").placeholder=g("HTTP","password_set",false)?"•••••• (gesetzt · leer = unverändert)":"";
+  $("http_token").placeholder=g("HTTP","token_set",false)?"•••••• (gesetzt · leer = unverändert)":"";
+  transportChanged();
   cpMap();  // VRM-Instanz-Vorschau initial anzeigen
   status();
 }
+// MQTT-/HTTP-Felder je nach Transport ein-/ausblenden
+function transportChanged(){
+  const http = $("transport").value==="http";
+  $("mqttfields").style.display = http ? "none" : "block";
+  $("httpfields").style.display = http ? "block" : "none";
+  const mode = $("http_auth_mode").value;
+  $("http_userpass").style.display = (mode==="userpass") ? "flex" : "none";
+  $("http_tokenrow").style.display = (mode==="token") ? "flex" : "none";
+}
 function collect(){
   // Nur Felder senden, die das UI wirklich steuert. Alles andere (tls_enabled,
-  // timeout, nominal_voltage, port, MQTT-Passwort) bleibt serverseitig erhalten.
+  // timeout, nominal_voltage, port, MQTT-/HTTP-Passwort) bleibt serverseitig erhalten.
   return {
     DEFAULT:{logging:$("logging").value, device_name:$("device_name").value,
       device_instance:$("device_instance").value},
@@ -752,13 +880,26 @@ function collect(){
     MQTT:{broker_address:$("broker_address").value, broker_port:$("broker_port").value,
       username:$("username").value, password:$("password").value,
       mqtt_root:$("mqtt_root").value},
+    SOURCE:{transport:$("transport").value},
+    HTTP:{host:$("http_host").value, scheme:$("http_scheme").value,
+      port:$("http_port").value, path:$("http_path").value,
+      auth_mode:$("http_auth_mode").value, username:$("http_username").value,
+      password:$("http_password").value, token:$("http_token").value,
+      verify_tls:$("http_verify_tls").checked?"1":"0"},
   };
 }
 async function scan(){
-  msg("Scanne openWB (ca. 4 s) ...","m-info");
-  const body={broker_address:$("broker_address").value,
-    broker_port:$("broker_port").value, username:$("username").value,
-    password:$("password").value, mqtt_root:$("mqtt_root").value};
+  const http = $("transport").value==="http";
+  msg(http?"Scanne openWB per HTTP ...":"Scanne openWB (ca. 4 s) ...","m-info");
+  const body = http
+    ? {transport:"http", host:$("http_host").value, scheme:$("http_scheme").value,
+       port:$("http_port").value, path:$("http_path").value,
+       auth_mode:$("http_auth_mode").value, username:$("http_username").value,
+       password:$("http_password").value, token:$("http_token").value,
+       verify_tls:$("http_verify_tls").checked}
+    : {transport:"mqtt", broker_address:$("broker_address").value,
+       broker_port:$("broker_port").value, username:$("username").value,
+       password:$("password").value, mqtt_root:$("mqtt_root").value};
   try{
     const r = await postJSON("/api/scan", body);
     if(!r.ok){ msg("Scan fehlgeschlagen: "+(r.error||"?"),"m-err");

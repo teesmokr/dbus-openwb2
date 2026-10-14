@@ -111,6 +111,23 @@ try:
     MQTT_PASS      = config["MQTT"].get("password", "") or None
     TLS_ENABLED    = config["MQTT"].get("tls_enabled", "0") == "1"
 
+    # Transport: 'mqtt' (Standard) oder 'http' (optional, bei openWB-Benutzerverwaltung)
+    TRANSPORT = (config["SOURCE"].get("transport", "mqtt").strip().lower()
+                 if config.has_section("SOURCE") else "mqtt")
+    if TRANSPORT not in ("mqtt", "http"):
+        TRANSPORT = "mqtt"
+    _http = config["HTTP"] if config.has_section("HTTP") else {}
+    HTTP_HOST       = _http.get("host", "") if hasattr(_http, "get") else ""
+    HTTP_SCHEME     = (_http.get("scheme", "http") if HTTP_HOST else "http")
+    HTTP_PORT       = _http.get("port", "") if HTTP_HOST else ""
+    HTTP_PATH       = _http.get("path", "/openWB/simpleAPI/simpleapi.php") if HTTP_HOST else "/openWB/simpleAPI/simpleapi.php"
+    HTTP_AUTH       = _http.get("auth_mode", "none") if HTTP_HOST else "none"
+    HTTP_TOKEN      = _http.get("token", "") if HTTP_HOST else ""
+    HTTP_USER       = _http.get("username", "") if HTTP_HOST else ""
+    HTTP_PASS       = _http.get("password", "") if HTTP_HOST else ""
+    HTTP_VERIFY     = (_http.get("verify_tls", "1") == "1") if HTTP_HOST else True
+    HTTP_POLL       = int(_http.get("poll_interval", "5")) if HTTP_HOST else 5
+
     # Ladepunkt-IDs koennen als Liste angegeben werden: "1" oder "1,2"
     CP_IDS = [int(x) for x in str(config["WALLBOX"].get("chargepoint_id", "1")).replace(" ", "").split(",") if x]
     MAX_CURRENT    = int(config["WALLBOX"].get("max_current", "16"))
@@ -128,6 +145,17 @@ except (ValueError, KeyError) as e:
 
 if not CP_IDS:
     _fatal("Keine gueltige Ladepunkt-ID in [WALLBOX] chargepoint_id.")
+
+if TRANSPORT == "http" and not HTTP_HOST:
+    _fatal("transport = http, aber [HTTP] host ist nicht gesetzt.")
+
+if TRANSPORT == "http":
+    CONN_STR = "openWB SimpleAPI HTTP %s" % HTTP_HOST
+else:
+    CONN_STR = "openWB SimpleAPI %s:%d" % (BROKER_ADDR, BROKER_PORT)
+
+if TRANSPORT == "http" and not HTTP_HOST:
+    _fatal("transport = http, aber [HTTP] host ist nicht gesetzt.")
 
 
 # chargemode  ->  Venus /Mode  (0=Manuell, 1=Auto, 2=Zeitplan).
@@ -158,11 +186,12 @@ _t   = lambda p, v: str(v)
 # Ein Ladepunkt = ein D-Bus evcharger-Service
 # --------------------------------------------------------------------------
 class ChargePoint:
-    def __init__(self, cp_id, instance, name, client):
+    def __init__(self, cp_id, instance, name, client, http=None):
         self.id = cp_id
         self.instance = instance
         self.name = name
         self.client = client
+        self.http = http
 
         self.power = 0.0
         self.imported = 0.0
@@ -217,8 +246,8 @@ class ChargePoint:
             else dbus.SystemBus(private=True)
         svc = VeDbusService(sn, bus=bus)
         svc.add_path("/Mgmt/ProcessName", __file__)
-        svc.add_path("/Mgmt/ProcessVersion", "2.0.5 auf Python " + platform.python_version())
-        svc.add_path("/Mgmt/Connection", "openWB SimpleAPI %s:%d" % (BROKER_ADDR, BROKER_PORT))
+        svc.add_path("/Mgmt/ProcessVersion", "2.1.0 auf Python " + platform.python_version())
+        svc.add_path("/Mgmt/Connection", CONN_STR)
         svc.add_path("/DeviceInstance", self.instance)
         svc.add_path("/ProductId", 0xC024)
         svc.add_path("/ProductName", "openWB 2.x")
@@ -310,6 +339,46 @@ class ChargePoint:
         self.voltages[idx] = _f(p)
         self.svc["/Ac/Voltage"] = round(sum(self.voltages) / 3.0, 1)
 
+    # ---- HTTP-Transport: normalisiertes Dict (aus openwb_http.read_chargepoint) ----
+    def update_from_http(self, d):
+        if not d:
+            return
+        self.last_msg = time()
+        if d.get("power") is not None:
+            self.power = _f(d["power"])
+            self.svc["/Ac/Power"] = round(self.power, 1)
+        cur = d.get("currents")
+        if isinstance(cur, (list, tuple)):
+            for i in range(min(3, len(cur))):
+                self.currents[i] = _f(cur[i])
+            self.svc["/Current"] = round(max(self.currents), 1)
+        volt = d.get("voltages")
+        if isinstance(volt, (list, tuple)):
+            for i in range(min(3, len(volt))):
+                self.voltages[i] = _f(volt[i])
+            self.svc["/Ac/Voltage"] = round(sum(self.voltages) / 3.0, 1)
+        self._phase_powers()
+        if d.get("imported") is not None:
+            self.imported = _f(d["imported"])
+            self.svc["/Ac/Energy/Forward"] = round(self.imported / 1000.0, 3)
+        if d.get("phases_in_use") is not None:
+            self.phases = max(1, int(_f(d["phases_in_use"], 1)))
+            self.svc["/NrOfPhases"] = self.phases
+        if d.get("evse_current") is not None:
+            self.evse_current = _f(d["evse_current"])
+            self.svc["/SetCurrent"] = round(self.evse_current, 1)
+        if d.get("soc") is not None:
+            self.soc = _f(d["soc"])
+            self.svc["/Soc"] = round(self.soc, 0)
+        if d.get("plug_state") is not None:
+            self.plug = 1 if _truthy(d["plug_state"]) else 0
+        if d.get("charge_state") is not None:
+            self.charge = 1 if _truthy(d["charge_state"]) else 0
+        if d.get("chargemode"):
+            self.chargemode = str(d["chargemode"]).strip().lower()
+            self.svc["/Mode"] = ANY_MODE_TO_MODE.get(self.chargemode, 0)
+        self._status()
+
     def _phase_powers(self):
         pw = [self.currents[i] * self.voltages[i] for i in range(3)]
         self.svc["/Ac/L1/Power"] = round(pw[0], 1)
@@ -399,16 +468,28 @@ class ChargePoint:
         return max(6, min(int(round(float(amp))), MAX_CURRENT))
 
     def cmd_startstop(self, value):
-        self._pub("%s/simpleAPI/set/chargepoint/%d/chargemode" % (MQTT_ROOT, self.id),
-                  "instant" if value == 1 else "stop")
+        mode = "instant" if value == 1 else "stop"
+        if self.http is not None:
+            self.http.set_chargemode(self.id, mode)
+            log.info("STEUERUNG LP%d -> HTTP chargemode = %s", self.id, mode)
+        else:
+            self._pub("%s/simpleAPI/set/chargepoint/%d/chargemode" % (MQTT_ROOT, self.id), mode)
 
     def cmd_setcurrent(self, value):
-        self._pub("%s/simpleAPI/set/chargepoint/%d/chargecurrent" % (MQTT_ROOT, self.id),
-                  str(self._clamp_current(value)))
+        amp = self._clamp_current(value)
+        if self.http is not None:
+            self.http.set_current(self.id, amp)
+            log.info("STEUERUNG LP%d -> HTTP chargecurrent = %s", self.id, amp)
+        else:
+            self._pub("%s/simpleAPI/set/chargepoint/%d/chargecurrent" % (MQTT_ROOT, self.id), str(amp))
 
     def cmd_mode(self, value):
-        self._pub("%s/simpleAPI/set/chargepoint/%d/chargemode" % (MQTT_ROOT, self.id),
-                  {0: "instant", 1: "pv", 2: "target"}.get(value, "instant"))
+        mode = {0: "instant", 1: "pv", 2: "target"}.get(value, "instant")
+        if self.http is not None:
+            self.http.set_chargemode(self.id, mode)
+            log.info("STEUERUNG LP%d -> HTTP chargemode = %s", self.id, mode)
+        else:
+            self._pub("%s/simpleAPI/set/chargepoint/%d/chargemode" % (MQTT_ROOT, self.id), mode)
 
     def _pub(self, topic, payload):
         self.client.publish(topic, payload, qos=0, retain=False)
@@ -429,9 +510,19 @@ def _bool(payload):
     return 1 if payload.decode("utf-8", "ignore").strip().lower() in ("1", "true") else 0
 
 
+def _truthy(v):
+    """Wahrheitswert aus bool/int/float/str (HTTP-Transport)."""
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, (int, float)):
+        return v != 0
+    return str(v).strip().lower() in ("1", "true", "on", "yes")
+
+
 chargepoints = {}   # cp_id -> ChargePoint
 topic_index = {}    # topic -> ChargePoint
 client = None
+http = None         # OpenWBHttp-Instanz, wenn TRANSPORT == 'http'
 START_TS = 0.0      # Startzeitpunkt fuer den Watchdog
 
 
@@ -486,7 +577,8 @@ def write_status():
         data = {
             "updated": int(time()),
             "control_enabled": CONTROL_ENABLED,
-            "broker": "%s:%d" % (BROKER_ADDR, BROKER_PORT),
+            "broker": CONN_STR,
+            "transport": TRANSPORT,
             "chargepoints": [cp.snapshot() for cp in chargepoints.values()],
         }
         tmp = STATUS_FILE + ".tmp"
@@ -495,6 +587,24 @@ def write_status():
         os.replace(tmp, STATUS_FILE)
     except Exception as e:  # noqa: BLE001
         log.debug("status.json konnte nicht geschrieben werden: %s", e)
+
+
+def http_poll():
+    """HTTP-Transport: pollt alle Ladepunkte ueber die HTTP-SimpleAPI."""
+    try:
+        for cp in chargepoints.values():
+            try:
+                d = http.read_chargepoint(cp.id)
+                if d:
+                    cp.update_from_http(d)
+                else:
+                    log.debug("HTTP: keine Daten fuer LP%d", cp.id)
+            except Exception as e:  # noqa: BLE001
+                log.warning("HTTP-Poll LP%d fehlgeschlagen: %s", cp.id, e)
+    except Exception:  # noqa: BLE001
+        et, eo, tb = sys.exc_info()
+        log.error("Fehler in http_poll(): %r (Zeile %s)", eo, tb.tb_lineno)
+    return True  # Timer bleibt aktiv
 
 
 def periodic():
@@ -520,26 +630,35 @@ def periodic():
 # main
 # --------------------------------------------------------------------------
 def main():
-    global client, START_TS
+    global client, http, START_TS
     START_TS = time()
 
     from dbus.mainloop.glib import DBusGMainLoop  # pyright: ignore[reportMissingImports]
     DBusGMainLoop(set_as_default=True)
 
-    client = make_mqtt_client("dbus-openwb2-%d" % DEVICE_INST)
-    client.on_connect = on_connect
-    client.on_disconnect = on_disconnect
-    client.on_message = on_message
-    if MQTT_USER and MQTT_PASS:
-        client.username_pw_set(MQTT_USER, MQTT_PASS)
-    if TLS_ENABLED:
-        client.tls_set(tls_version=2)
+    if TRANSPORT == "http":
+        from openwb_http import OpenWBHttp
+        http = OpenWBHttp(host=HTTP_HOST, scheme=HTTP_SCHEME, port=HTTP_PORT,
+                          path=HTTP_PATH, auth_mode=HTTP_AUTH, token=HTTP_TOKEN,
+                          username=HTTP_USER, password=HTTP_PASS,
+                          verify_tls=HTTP_VERIFY)
+        log.info("Transport: HTTP-SimpleAPI %s", CONN_STR)
+    else:
+        client = make_mqtt_client("dbus-openwb2-%d" % DEVICE_INST)
+        client.on_connect = on_connect
+        client.on_disconnect = on_disconnect
+        client.on_message = on_message
+        if MQTT_USER and MQTT_PASS:
+            client.username_pw_set(MQTT_USER, MQTT_PASS)
+        if TLS_ENABLED:
+            client.tls_set(tls_version=2)
+        log.info("Transport: MQTT %s:%d", BROKER_ADDR, BROKER_PORT)
 
     # Ladepunkte anlegen (ein Service je ID, Instanz fortlaufend)
     for i, cp_id in enumerate(CP_IDS):
         inst = DEVICE_INST + i
         name = DEVICE_NAME if len(CP_IDS) == 1 else "%s LP%d" % (DEVICE_NAME, cp_id)
-        cp = ChargePoint(cp_id, inst, name, client)
+        cp = ChargePoint(cp_id, inst, name, client, http=http)
         chargepoints[cp_id] = cp
         for t in cp.topics:
             topic_index[t] = cp
@@ -547,14 +666,19 @@ def main():
 
     log.info("openWB SimpleAPI | Steuerung: %s", "AN" if CONTROL_ENABLED else "AUS")
 
-    # connect_async + loop_start: paho verbindet selbststaendig mit Backoff und
-    # blockiert/craeshet nicht, wenn die openWB beim Start (noch) nicht erreichbar ist
-    try:
-        client.reconnect_delay_set(min_delay=1, max_delay=60)
-    except Exception:  # noqa: BLE001 (aeltere paho-Versionen)
-        pass
-    client.connect_async(BROKER_ADDR, BROKER_PORT, keepalive=60)
-    client.loop_start()
+    if TRANSPORT == "http":
+        # erster Poll sofort, danach im Intervall
+        http_poll()
+        GLib.timeout_add_seconds(max(2, HTTP_POLL), http_poll)
+    else:
+        # connect_async + loop_start: paho verbindet selbststaendig mit Backoff und
+        # blockiert/craeshet nicht, wenn die openWB beim Start (noch) nicht erreichbar ist
+        try:
+            client.reconnect_delay_set(min_delay=1, max_delay=60)
+        except Exception:  # noqa: BLE001 (aeltere paho-Versionen)
+            pass
+        client.connect_async(BROKER_ADDR, BROKER_PORT, keepalive=60)
+        client.loop_start()
 
     GLib.timeout_add_seconds(2, periodic)
     GLib.MainLoop().run()

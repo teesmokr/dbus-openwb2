@@ -1,5 +1,31 @@
 # Changelog
 
+## [2.1.0] – 2026-10-14
+
+### Neu
+- **Optionaler HTTP-Transport für die SimpleAPI** (experimentell). Hintergrund:
+  Sobald in der openWB die **Benutzerverwaltung** aktiviert wird, schaltet openWB
+  den unverschlüsselten MQTT-Listener auf Port 1883 ab – der Scan/Treiber bekommt
+  dann **„Connection refused"**. openWB bietet dieselbe SimpleAPI zusätzlich über
+  **HTTP** an (mit Bearer-Token oder Benutzer/Passwort), die auch bei aktiver
+  Benutzerverwaltung funktioniert. Neu:
+  - `[SOURCE] transport = mqtt|http` (Default **mqtt** – für bestehende Setups
+    ändert sich nichts).
+  - Neues Modul `openwb_http.py` (nur Standardbibliothek): Lesen per Polling
+    (`get_chargepoint_all` + Einzel-Getter als Fallback), Steuerung per POST
+    (`set_chargemode`, `chargecurrent`), Auth per Token oder Benutzer/Passwort,
+    optionaler TLS-Verify-Schalter für selbstsignierte Zertifikate.
+  - Web-Interface: Umschalter **Datenquelle (MQTT/HTTP)**, HTTP-Felder und
+    HTTP-Scan.
+  - `config.ini`: neue Abschnitte `[SOURCE]` und `[HTTP]` (siehe `config.sample.ini`).
+
+> **Hinweis:** Der HTTP-Transport ist noch **nicht auf Hardware getestet**. Das
+> genaue JSON-Schema von `get_chargepoint_all` ist in der openWB-Doku nur als
+> Auszug dokumentiert; das Mapping ist defensiv (mehrere mögliche Schlüsselnamen,
+> Einzel-Getter als Fallback) und sollte gegen eine echte openWB mit aktivierter
+> HTTP-SimpleAPI verifiziert werden. MQTT bleibt der empfohlene Standard (push
+> statt polling). Rückmeldungen willkommen.
+
 ## [2.0.5] – 2026-09-03
 
 ### Geändert (Web-Interface)
