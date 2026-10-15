@@ -93,7 +93,7 @@ DEFAULTS = {
     "HTTP":    {"host": "", "scheme": "http", "port": "",
                 "path": "/openWB/simpleAPI/simpleapi.php", "auth_mode": "none",
                 "token": "", "username": "", "password": "",
-                "verify_tls": "1", "poll_interval": "5"},
+                "verify_tls": "1", "poll_interval": "30"},
 }
 
 
@@ -662,13 +662,17 @@ PAGE = r"""<!doctype html>
       </div>
       <p class="note">Nutzt die stabile <b>openWB-SimpleAPI</b> (<code>openWB/simpleAPI/…</code>) –
         in aktuellen openWB-2-Versionen immer aktiv, keine Einstellung nötig. Wird beim
-        Scan nichts gefunden, ist die openWB vermutlich zu alt → bitte aktualisieren.</p>
+        Scan nichts gefunden, ist die openWB vermutlich zu alt → bitte aktualisieren.
+        Bei aktiver openWB-<b>Benutzerverwaltung</b> hier einfach <b>Benutzer/Passwort</b>
+        eintragen (der MQTT-Zugriff wird dann per ACL geregelt).</p>
     </div>
 
     <div id="httpfields" style="display:none">
-      <p class="hint">HTTP-SimpleAPI der openWB – funktioniert auch bei aktivierter
-        <b>Benutzerverwaltung</b> (dann ist MQTT auf 1883 oft abgeschaltet → „Connection refused").
-        Muss in der openWB <b>manuell aktiviert</b> werden. <b>Experimentell.</b></p>
+      <p class="hint">HTTP-SimpleAPI der openWB. <b>Langsamer Fallback</b> – HTTP braucht
+        pro Abfrage ~1–2,5 s (Prozess-Spawn in der openWB), daher Poll-Intervall hoch
+        halten (30 s+). <b>Empfehlung bei aktiver Benutzerverwaltung: stattdessen MQTT
+        mit Zugangsdaten</b> (oben Datenquelle „MQTT", openWB-Benutzer/Passwort eintragen).
+        MQTT und HTTP sind in der openWB immer beide aktiv. <b>Experimentell.</b></p>
       <div class="row">
         <div><label>openWB IP / Hostname</label>
           <input id="http_host" placeholder="192.168.1.50"></div>
@@ -697,8 +701,10 @@ PAGE = r"""<!doctype html>
         <input type="checkbox" id="http_verify_tls" checked>
         <label for="http_verify_tls">TLS-Zertifikat prüfen (bei selbstsigniertem Zertifikat deaktivieren)</label>
       </div>
-      <p class="note">Nur nötig, wenn der MQTT-Zugang (Port 1883) durch die openWB-Benutzerverwaltung
-        gesperrt ist. Ansonsten ist <b>MQTT der empfohlene Weg</b> (push statt polling).</p>
+      <p class="note">Bei aktiver openWB-Benutzerverwaltung bleibt MQTT erreichbar – der
+        Zugriff wird dann per ACL geregelt. Trag dafür einfach deine openWB-Zugangsdaten
+        unter Datenquelle „MQTT" ein; das ist der <b>empfohlene, schnellere Weg</b> (push
+        statt polling). HTTP ist nur ein langsamer Fallback.</p>
     </div>
 
     <div class="bar"><button class="ghost" onclick="scan()">&#128246;&nbsp; openWB scannen</button></div>

@@ -126,7 +126,7 @@ try:
     HTTP_USER       = _http.get("username", "") if HTTP_HOST else ""
     HTTP_PASS       = _http.get("password", "") if HTTP_HOST else ""
     HTTP_VERIFY     = (_http.get("verify_tls", "1") == "1") if HTTP_HOST else True
-    HTTP_POLL       = int(_http.get("poll_interval", "5")) if HTTP_HOST else 5
+    HTTP_POLL       = int(_http.get("poll_interval", "30")) if HTTP_HOST else 30
 
     # Ladepunkt-IDs koennen als Liste angegeben werden: "1" oder "1,2"
     CP_IDS = [int(x) for x in str(config["WALLBOX"].get("chargepoint_id", "1")).replace(" ", "").split(",") if x]
@@ -246,7 +246,7 @@ class ChargePoint:
             else dbus.SystemBus(private=True)
         svc = VeDbusService(sn, bus=bus)
         svc.add_path("/Mgmt/ProcessName", __file__)
-        svc.add_path("/Mgmt/ProcessVersion", "2.1.0 auf Python " + platform.python_version())
+        svc.add_path("/Mgmt/ProcessVersion", "2.1.1 auf Python " + platform.python_version())
         svc.add_path("/Mgmt/Connection", CONN_STR)
         svc.add_path("/DeviceInstance", self.instance)
         svc.add_path("/ProductId", 0xC024)
