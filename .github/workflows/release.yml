@@ -1,0 +1,62 @@
+name: Release
+
+# Legt automatisch ein GitHub-Release an, sobald sich die version-Datei auf main
+# aendert (also bei jedem Versions-Bump). Zusaetzlich manuell ausloesbar.
+# Laeuft mit GITHUB_TOKEN (nicht mit einem Nutzer-Token) und ist idempotent:
+# existiert das Release/Tag schon, passiert nichts.
+
+on:
+  push:
+    branches: [ main ]
+    paths: [ 'version' ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Release aus version-Datei erstellen
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          # Tag aus der version-Datei lesen (z. B. "v2.1.1"); ggf. fuehrendes v ergaenzen
+          TAG="$(tr -d ' \t\n\r' < version)"
+          case "$TAG" in
+            v*) ;;
+            *)  TAG="v$TAG" ;;
+          esac
+          VER="${TAG#v}"
+          echo "Version aus Datei: $TAG"
+
+          # Schon vorhanden? -> nichts tun (idempotent)
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG existiert bereits – nichts zu tun."
+            exit 0
+          fi
+
+          # Passenden CHANGELOG-Abschnitt extrahieren:
+          # von "## [<VER>]" bis zur naechsten "## ["-Ueberschrift.
+          NOTES="$(awk -v ver="$VER" '
+            index($0, "## [" ver "]") == 1 { flag=1; next }
+            flag && index($0, "## [") == 1 { flag=0 }
+            flag { print }
+          ' CHANGELOG.md)"
+
+          if [ -z "$(printf '%s' "$NOTES" | tr -d ' \t\n\r')" ]; then
+            NOTES="Release $TAG. Details siehe CHANGELOG.md."
+          fi
+          printf '%s\n' "$NOTES" > "$RUNNER_TEMP/notes.md"
+
+          # Release anlegen (Tag wird dabei auf dem aktuellen Commit erstellt)
+          gh release create "$TAG" \
+            --target "$GITHUB_SHA" \
+            --title "$TAG" \
+            --notes-file "$RUNNER_TEMP/notes.md"
+          echo "Release $TAG erstellt."
